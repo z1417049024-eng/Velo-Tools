@@ -2,7 +2,7 @@
 
 > 适用版本：Velo Tools v1.5.0。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
-Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
+Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI、鸣潮 WWMI 和绝区零 ZZMI/DBMT 工作流放在同一个 **Velo Tools** 面板中。
 
 支持 Blender 3.6 及以上版本，主要开发和验证版本为 Blender 4.4。
 
@@ -20,6 +20,7 @@ Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网�
 8. [理解并验收导出结果](#8-理解并验收导出结果)
 9. [按症状排障](#9-按症状排障)
 10. [限制与术语](#10-限制与术语)
+11. [绝区零 ZZMI/DBMT](#11-绝区零-zzmidbmt)
 
 ## 1. 开始使用
 
@@ -28,7 +29,7 @@ Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网�
 1. 在 Blender 的 3D 视图中按 `N`。
 2. 打开右侧 **Velo Tools** 标签页。
 3. 在面板顶部选择 **功能区**。
-4. 选择 **游戏** 时，再用 **游戏** 下拉框选择 **终末地** 或 **鸣潮**。
+4. 选择 **游戏** 时，再用 **游戏** 下拉框选择 **终末地**、**鸣潮**或**绝区零**。
 
 四个功能区分别是：
 
@@ -1189,3 +1190,28 @@ CrossIB 应从目标场景的新 Frame Dump 累积 sidecar。跨场景 WWMI 应�
 - **原始网格工具**
 
 技术标识保持原文，避免把数据格式或运行时身份翻译成不一致的名称。
+
+## 11. 绝区零 ZZMI/DBMT
+
+绝区零工作流直接使用 DBMT 当前选择的 `WorkSpace/ZZZ/<名称>`。先在 DBMT
+选择游戏和 workspace，再在 Velo Tools 中选择 **绝区零**。导入、贴图预览、
+集合结构和导出目录规则与 SSMT/DBMT 一致。
+
+骨架模式：
+
+| 模式 | 行为 |
+| --- | --- |
+| **Per-Component** | 保留每个 DrawIB 的本地顶点组编号，行为与原生 SSMT 一致。 |
+| **Merged** | 使用 `VertexGroupMap.json` 把各 DrawIB 的同一骨骼显示为统一编号；导出时再回译为本地编号。 |
+
+首次使用 Merged：
+
+1. 使用包含当前角色全部目标 DrawIB 的同一次 FrameAnalysis。
+2. 在 **导入模型配置** 中选择 **Merged** 并指定 FrameAnalysis；留空时使用 DBMT 中最新一次抓帧。
+3. 点击 **生成 ZZZ VertexGroupMap.json**。生成器读取预蒙皮调用的 skeleton buffer，不按坐标猜测骨骼。
+4. 导入 workspace，编辑统一编号的顶点组。
+5. 导出时同样选择 **Merged**。
+
+`VertexGroupMap.json` 与 workspace 数据必须配套。某个部件如果被刷到其本地骨表不存在的统一顶点组，导出会停止并报告该组，而不是静默写出错误的 `BLENDINDICES`。
+
+当前生成器支持 VS pre-skinning 的 `vs-t0` skeleton stream；尚未实现 CS pre-skinning skeleton buffer 发现。如果匹配的 FrameAnalysis 不包含该 stream，生成会明确失败，不会猜测映射。

@@ -4,7 +4,7 @@ bl_info = {
     "version": (1, 5, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Velo Tools",
-    "description": "Mod 制作辅助工具集（合并 Velo Tools Endfield V0.0.8）— 顶点组工具 / 网格工具 / 权重工具 / 游戏 MOD 工作流（终末地 EFMI / 鸣潮 WWMI）",
+    "description": "Mod 制作辅助工具集：顶点组 / 网格 / 权重 / EFMI / WWMI / ZZMI-DBMT 工作流",
     "category": "Object",
 }
 

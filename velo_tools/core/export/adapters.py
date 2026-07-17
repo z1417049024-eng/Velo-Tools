@@ -57,9 +57,26 @@ def wwmi_invoke_export(context) -> dict:
         return {"ok": False, "msg": f"调用 vtww.export_mod 失败: {e}"}
 
 
+# ---------------- ZZMI / DBMT ----------------
+
+def zzmi_available() -> bool:
+    return hasattr(bpy.types.Scene, "VTZZ_properties_generate_mod")
+
+
+def zzmi_invoke_export(context) -> dict:
+    if not zzmi_available():
+        return {"ok": False, "msg": "未检测到 ZZMI 适配（缺少 scene.VTZZ_properties_generate_mod）"}
+    try:
+        bpy.ops.vtzz.generate_mod_unity_vs('INVOKE_DEFAULT')
+        return {"ok": True, "msg": "已转交 DBMT/ZZMI 导出（vtzz.generate_mod_unity_vs）"}
+    except Exception as e:
+        return {"ok": False, "msg": f"调用 vtzz.generate_mod_unity_vs 失败: {e}"}
+
+
 ADAPTERS = {
     "EFMI": (efmi_available, efmi_invoke_export),
     "WWMI": (wwmi_available, wwmi_invoke_export),
+    "ZZMI": (zzmi_available, zzmi_invoke_export),
 }
 
 

@@ -24,6 +24,17 @@ WWMI-Tools (Wuthering Waves Model Importer)
             adaptation; panel re-parenting; updater neutralized; COLOR1 -> TEXCOORD1 fix.
             The cross-scene multi-IB merge is mounted via the driver layer.
 
+SSMT / TheHerta (DBMT Blender workflow)
+  Author  : StarBobis and contributors
+  License : GPL-3.0
+  Upstream: https://github.com/StarBobis/SSMT
+            https://github.com/StarBobis/TheHerta4
+  Location: velo_tools/games/zenless_zone_zero/_zzmi_core/
+  Changes : based on the SSMT v1.6.1 workflow; namespace fork to VTZZ/vtzz for
+            coexistence, Velo panel mounting, portable configuration, ZZZ material
+            import fixes, and an authoring-side Merged vertex-group map generated
+            from FrameAnalysis skeleton buffers.
+
 Blender Addon Updater
   Author  : CGCookie (Patrick W. Crawford and contributors)
   License : GPL

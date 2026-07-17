@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.5.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.5.0. Velo Tools hosts shared Blender helpers and namespaced EFMI, WWMI, and ZZMI/DBMT workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -16,6 +16,7 @@ Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 8. [Read and Validate Output](#read-and-validate-output)
 9. [Troubleshooting by Symptom](#troubleshooting-by-symptom)
 10. [Limits and Glossary](#limits-and-glossary)
+11. [Zenless Zone Zero ZZMI/DBMT](#zenless-zone-zero-zzmidbmt)
 
 ## Start Here
 
@@ -949,3 +950,19 @@ They are required slot-transaction backup handles. Their values are assigned at 
 | **Form anchor** | Optional `vb0` or pixel-shader identity used to narrow a safe form branch |
 | **Raw Mesh** | WWMI path for non-character geometry with preserved raw slot bytes |
 | **Owning IB namespace** | `_ibN` suffix and lifecycle state isolating one cross-scene route |
+
+## Zenless Zone Zero ZZMI/DBMT
+
+The ZZZ integration uses the workspace currently selected in DBMT. Per-Component
+mode preserves the stock SSMT behavior. Merged mode builds a workspace-local
+`VertexGroupMap.json` from the matching FrameAnalysis skeleton buffers, renames
+local groups to unified authoring IDs on import, and translates those names back
+to each DrawIB's local palette on export. Use the same mode for import and export.
+
+If a mesh carries weight on a unified group that is not present in that DrawIB's
+local palette, export fails with an explicit error instead of writing invalid
+`BLENDINDICES`.
+
+The current map builder supports the VS pre-skinning `vs-t0` skeleton stream.
+CS pre-skinning skeleton-buffer discovery is not implemented; generation fails
+explicitly when the matching FrameAnalysis does not contain the supported stream.

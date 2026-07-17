@@ -1085,7 +1085,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
             ('MATCH', "顶点组工具", "顶点组名称匹配 / MMD 映射 / 顶点组操作"),
             ('MESH', "网格工具", "材质 / 拆分合并 / 形态键聚合 / 多物体雕刻"),
             ('WEIGHT', "权重工具", "权重传递 / 平滑 / 限制组数量"),
-            ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI)"),
+            ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI) / 绝区零(ZZMI)"),
         ],
         default='MATCH',
         update=_on_active_tab_update,
@@ -1097,6 +1097,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         items=[
             ('ENDFIELD', "终末地", "明日方舟：终末地 MOD 工作流（EFMITools）"),
             ('WUTHERING', "鸣潮", "鸣潮 MOD 工作流（WWMITools）"),
+            ('ZENLESS', "绝区零", "绝区零 DBMT / ZZMI MOD 工作流"),
         ],
         default='ENDFIELD',
         update=_on_active_game_update,
