@@ -8,6 +8,8 @@ GIMI-ecosystem tools, with shared, game-agnostic helpers. Currently supported ga
 - **Wuthering Waves** - a vendored fork of WWMI-Tools (including the
   COLOR1 -> TEXCOORD1 fix), plus cross-scene multi-IB, LOD, slot-style texture
   export and Raw Mesh workflows.
+- **Zenless Zone Zero** - a vendored SSMT/DBMT workflow with ZZMI-compatible
+  workspace import/export and optional Merged vertex-group authoring.
 
 Shared tools include vertex-group name matching, mesh/material helpers,
 shape-key aggregation, Weight Tools and EFMI Merged Component partitioning.
@@ -24,9 +26,10 @@ Quick guide:
 | Goal | Start here |
 | --- | --- |
 | Install or update Velo Tools | Blender Preferences -> Add-ons -> Velo-Tools |
-| Choose EFMI or WWMI | 3D Viewport -> `N` -> Velo Tools -> Game |
+| Choose EFMI, WWMI or ZZMI/DBMT | 3D Viewport -> `N` -> Velo Tools -> Game |
 | Arknights: Endfield mod workflow | EFMI panels, CrossIB and ShapeKey tools |
 | Wuthering Waves character workflow | WWMI Import Object and Export Mod |
+| Zenless Zone Zero DBMT workflow | Select Zenless Zone Zero and use the current DBMT workspace |
 | WWMI cross-scene or LOD workflow | Cross-scene fold merge and LOD Data Extraction |
 | WWMI texture-streaming compatibility | Export Mod -> Velo compatibility options -> slot-style texture export |
 | Non-character WWMI geometry | WWMI Raw Mesh |

@@ -10,8 +10,9 @@ The top-level __init__.py decides whether to call register() based on enabled().
 
 from . import arknights_endfield
 from . import wuthering_waves
+from . import zenless_zone_zero
 
-ALL_GAMES = (arknights_endfield, wuthering_waves)
+ALL_GAMES = (arknights_endfield, wuthering_waves, zenless_zone_zero)
 
 
 def register():
