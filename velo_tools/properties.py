@@ -1110,6 +1110,27 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         default=False,
     )
 
+    partition_reference_object: PointerProperty(
+        name="分区参考体",
+        description="包含面级 Component ID 的参考网格",
+        type=bpy.types.Object,
+    )
+    partition_master_object: PointerProperty(
+        name="完整 Master",
+        description="需要保留完整版本并自动拆回各 Component 的目标网格",
+        type=bpy.types.Object,
+    )
+    partition_legacy_object: PointerProperty(
+        name="旧手工合并体",
+        description="可选；旧的手工 Join 网格会被隐藏并排除导出",
+        type=bpy.types.Object,
+    )
+    partition_status: StringProperty(
+        name="分割状态",
+        default="",
+        options={'HIDDEN'},
+    )
+
     # Top-of-main-panel tab switch
     active_tab: EnumProperty(
         name="功能区",
@@ -1117,6 +1138,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
             ('MATCH', "顶点组工具", "顶点组名称匹配 / MMD 映射 / 顶点组操作"),
             ('MESH', "网格工具", "材质 / 拆分合并 / 形态键聚合 / 多物体雕刻"),
             ('WEIGHT', "权重工具", "权重传递 / 平滑 / 限制组数量"),
+            ('PARTITION', "分割操作", "EFMI Merged Component 自动分割"),
             ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI)"),
         ],
         default='MATCH',

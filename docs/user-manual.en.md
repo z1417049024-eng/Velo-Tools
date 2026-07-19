@@ -246,6 +246,20 @@ Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数�
 
 Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
 
+### EFMI Merged Component Partition
+
+Open **分割操作 (Component Partition)** to project the boundaries of selected imported EFMI Components onto one complete body or garment. This workflow supports `Merged` projects with a matching `VertexGroupMap.json`.
+
+1. Select the original Component meshes that define the required body regions.
+2. Click **创建分区参考体 (Create Partition Reference)**.
+3. Use the existing Weight Tools to transfer weights from the reference to the complete Master.
+4. Set the reference and Master, then click **投射分区并拆分 (Project and Split)**.
+5. Export the generated `Component N` objects from their C0/C1/... collections. The complete Master remains intact.
+
+Original Components are hidden but are not moved, renamed, or deleted. Velo excludes source, reference, Master, and diagnostic objects from EFMI export regardless of **Ignore Hidden Objects**.
+
+Partition boundaries follow existing Master edges. Boundary copies receive matching coordinates, ShapeKeys, UVs, corner normals, and palette-safe normalized weights. Velo stops if a vertex would lose more than 10 percent of its weight. Use **选择模糊面 (Select Ambiguous Faces)** for low-confidence projection review and **恢复原始部件 (Restore Sources)** to remove generated outputs.
+
 ## EFMI End-to-End
 
 Choose **游戏 (Game) -> 终末地 (Arknights: Endfield)**.

@@ -10,7 +10,7 @@ GIMI-ecosystem tools, with shared, game-agnostic helpers. Currently supported ga
   export and Raw Mesh workflows.
 
 Shared tools include vertex-group name matching, mesh/material helpers,
-shape-key aggregation and Weight Tools.
+shape-key aggregation, Weight Tools and EFMI Merged Component partitioning.
 
 Requires Blender 3.6+ (developed and tested on 4.4).
 
@@ -31,6 +31,7 @@ Quick guide:
 | WWMI texture-streaming compatibility | Export Mod -> Velo compatibility options -> slot-style texture export |
 | Non-character WWMI geometry | WWMI Raw Mesh |
 | Weight transfer / mirror / repair | Velo Weight Tools |
+| Split one complete EFMI Merged body back into Components | Velo Component Partition |
 
 ## Install
 

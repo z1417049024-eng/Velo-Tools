@@ -191,6 +191,11 @@ class ObjectMerger:
             if obj.type != 'MESH':
                 continue
 
+            if str(obj.get('velo_partition_role', '')).lower() in {
+                'source', 'reference', 'master', 'diagnostic'
+            }:
+                continue
+
             if self.ignore_hidden_objects and object_is_hidden(obj):
                 continue
 

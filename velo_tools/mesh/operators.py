@@ -1093,6 +1093,11 @@ def prepare_material_route_export(context):
             if not is_real_mesh(obj):
                 continue
 
+            if str(obj.get("velo_partition_role", "")).lower() in {
+                "source", "reference", "master", "diagnostic"
+            }:
+                continue
+
             if ignore_hidden_objects and bool(getattr(obj, "hide_get", None) and obj.hide_get()):
                 continue
 
