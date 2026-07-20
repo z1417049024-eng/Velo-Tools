@@ -11,6 +11,13 @@ from ..migoto.migoto_format import M_Key, ObjModel, M_DrawIndexed, M_Condition,D
 from .m_export import get_buffer_ib_vb_fast
 from .m_counter import M_Counter
 
+_PARTITION_EXPORT_EXCLUDED_ROLES = {
+    "source",
+    "reference",
+    "master",
+    "diagnostic",
+}
+
 class ComponentModel:
     '''
     虽然DrawIBModel是每个游戏都不同的，但是ComponentModel这里的代码是可以复用的。
@@ -204,7 +211,11 @@ class ComponentModel:
             '''
             每个obj都必须添加条件，可是怎么样能知道当前条件是怎样的呢
             '''
-            if obj.type == 'MESH' and obj.hide_get() == False:
+            if (
+                obj.type == 'MESH'
+                and obj.hide_get() == False
+                and obj.get("velo_partition_role") not in _PARTITION_EXPORT_EXCLUDED_ROLES
+            ):
 
                 # print("当前处理物体:" + obj.name + " 生效Key条件:")
                 # for chain_key in chain_key_list:

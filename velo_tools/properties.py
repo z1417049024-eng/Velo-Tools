@@ -1138,7 +1138,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
             ('MATCH', "顶点组工具", "顶点组名称匹配 / MMD 映射 / 顶点组操作"),
             ('MESH', "网格工具", "材质 / 拆分合并 / 形态键聚合 / 多物体雕刻"),
             ('WEIGHT', "权重工具", "权重传递 / 平滑 / 限制组数量"),
-            ('PARTITION', "分割操作", "EFMI Merged Component 自动分割"),
+            ('PARTITION', "分割操作", "EFMI / ZZZ Merged Component 自动分割"),
             ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI) / 绝区零(ZZMI)"),
         ],
         default='MATCH',

@@ -1,4 +1,4 @@
-"""EFMI Merged Component partition workflow."""
+"""Merged Component partition workflow."""
 
 from . import operators, ui
 

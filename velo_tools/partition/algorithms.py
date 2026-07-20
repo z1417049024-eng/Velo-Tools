@@ -188,14 +188,6 @@ def prepare_component_weights(
         for vertex_id in polygon.vertices:
             vertex_components[vertex_id].add(component_id)
 
-    loose_vertices = [index for index, values in enumerate(vertex_components) if not values]
-    if loose_vertices:
-        preview = ", ".join(str(item) for item in loose_vertices[:10])
-        raise PartitionError(
-            f"目标包含未被任何面使用的顶点：{preview}。",
-            vertex_ids=loose_vertices,
-        )
-
     group_names = {group.index: group.name for group in target.vertex_groups}
     prepared: list[dict[int, float]] = []
     warnings: list[int] = []
@@ -204,6 +196,9 @@ def prepare_component_weights(
 
     for vertex in target.data.vertices:
         component_ids = vertex_components[vertex.index]
+        if not component_ids:
+            prepared.append({})
+            continue
         allowed = set.intersection(*(palettes[item] for item in component_ids))
         if not allowed:
             joined = ", ".join(f"C{item}" for item in sorted(component_ids))

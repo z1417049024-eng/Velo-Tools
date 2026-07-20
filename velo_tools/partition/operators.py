@@ -1,10 +1,11 @@
-"""Blender operators for non-destructive EFMI Component partitioning."""
+"""Blender operators for non-destructive Merged Component partitioning."""
 
 from __future__ import annotations
 
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import bpy
@@ -35,6 +36,7 @@ from .constants import (
     ROLE_OUTPUT,
     ROLE_REFERENCE,
     ROLE_SOURCE,
+    ROUTES_KEY,
     SOURCE_COMPONENTS_KEY,
     SOURCE_FACE_ATTRIBUTE,
     SOURCE_LOOP_ATTRIBUTE,
@@ -46,6 +48,7 @@ from .constants import (
 
 _COMPONENT_NAME_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
 _COMPONENT_COLLECTION_RE = re.compile(r"^c(\d+)$", re.IGNORECASE)
+_DRAW_IB_RE = re.compile(r"^([0-9a-f]{8})(?:_|$)", re.IGNORECASE)
 _TOPOLOGY_MODIFIERS = {
     "ARRAY",
     "BEVEL",
@@ -68,6 +71,15 @@ _TOPOLOGY_MODIFIERS = {
     "WELD",
     "WIREFRAME",
 }
+
+
+@dataclass
+class PartitionConfiguration:
+    game: str
+    settings: object
+    root: bpy.types.Collection
+    source: Path
+    palettes: dict
 
 
 def _set_status(settings, text: str) -> None:
@@ -155,23 +167,61 @@ def _component_id_from_object(obj):
 
 
 def _load_configuration(scene):
-    cfg = getattr(scene, "VTEF_settings", None)
-    if cfg is None:
-        raise PartitionError("未启用 Endfield EFMI 工作流。")
-    if getattr(cfg, "mod_skeleton_type", None) != "MERGED":
-        raise PartitionError("分割操作首版只支持 EFMI Merged。")
-    root = getattr(cfg, "component_collection", None)
-    if root is None:
-        raise PartitionError("请先在 EFMI 导出设置中选择组件集合。")
-    source = Path(bpy.path.abspath(str(getattr(cfg, "object_source_folder", "") or "")))
-    if not source.is_dir():
-        raise PartitionError("EFMI 对象源目录不存在。")
-    vertex_group_map = vgmap.read_map(source)
-    palettes = {
-        component_id: {int(value) for value in component.vg_map.values()}
-        for component_id, component in enumerate(vertex_group_map.components)
-    }
-    return cfg, root, source, palettes
+    tools = getattr(scene, "velo_tools", None)
+    game = getattr(tools, "active_game", "ENDFIELD")
+    if game == "ENDFIELD":
+        cfg = getattr(scene, "VTEF_settings", None)
+        if cfg is None:
+            raise PartitionError("未启用 Endfield EFMI 工作流。")
+        if getattr(cfg, "mod_skeleton_type", None) != "MERGED":
+            raise PartitionError("分割操作只支持 EFMI Merged。")
+        root = getattr(cfg, "component_collection", None)
+        if root is None:
+            raise PartitionError("请先在 EFMI 导出设置中选择组件集合。")
+        source = Path(bpy.path.abspath(str(getattr(cfg, "object_source_folder", "") or "")))
+        if not source.is_dir():
+            raise PartitionError("EFMI 对象源目录不存在。")
+        vertex_group_map = vgmap.read_map(source)
+        palettes = {
+            component_id: {int(value) for value in component.vg_map.values()}
+            for component_id, component in enumerate(vertex_group_map.components)
+        }
+        return PartitionConfiguration(game, cfg, root, source, palettes)
+
+    if game == "ZENLESS":
+        from ..games.zenless_zone_zero._zzmi_core.config.main_config import GlobalConfig
+        from ..games.zenless_zone_zero._zzmi_core.merged_vgmap import (
+            VertexGroupMapError,
+            load_map,
+        )
+
+        cfg = getattr(scene, "VTZZ_properties_generate_mod", None)
+        if cfg is None:
+            raise PartitionError("未启用绝区零 ZZMI / DBMT 工作流。")
+        if getattr(cfg, "skeleton_mode", None) != "MERGED":
+            raise PartitionError("分割操作只支持 ZZZ Merged。")
+        root = getattr(cfg, "component_collection", None)
+        if root is None:
+            raise PartitionError("请先在 ZZZ 导出设置中选择部件集合。")
+        GlobalConfig.read_from_main_json()
+        if GlobalConfig.gamename != "ZZZ" or not GlobalConfig.workspacename:
+            raise PartitionError("DBMT 当前工作空间不是有效的 ZZZ workspace。")
+        source = Path(GlobalConfig.path_workspace_folder())
+        if not source.is_dir():
+            raise PartitionError(f"ZZZ workspace 不存在：{source}")
+        try:
+            vertex_group_map = load_map(source)
+        except VertexGroupMapError as exc:
+            raise PartitionError(str(exc)) from exc
+        palettes = {
+            str(entry.get("draw_ib", "")).lower(): {
+                int(value) for value in (entry.get("vg_map") or {}).values()
+            }
+            for entry in vertex_group_map.get("components", [])
+        }
+        return PartitionConfiguration(game, cfg, root, source, palettes)
+
+    raise PartitionError("分割操作目前只支持 Endfield EFMI 和 Zenless ZZZ Merged。")
 
 
 def _workspace_collection(scene):
@@ -189,6 +239,13 @@ def _walk_collections(root):
         yield from _walk_collections(child)
 
 
+def _collection_paths(root, parents=()):
+    path = parents + (root,)
+    yield path
+    for child in root.children:
+        yield from _collection_paths(child, path)
+
+
 def _component_collection(root, component_id: int):
     for collection in _walk_collections(root):
         if _component_id_from_collection(collection) == component_id:
@@ -197,6 +254,99 @@ def _component_collection(root, component_id: int):
     collection["velo_component_id"] = int(component_id)
     root.children.link(collection)
     return collection
+
+
+def _draw_ib_from_collection(collection):
+    name = re.sub(r"\.\d{3}$", "", collection.name or "")
+    match = _DRAW_IB_RE.match(name)
+    return match.group(1).lower() if match else None
+
+
+def _zzz_route_for_object(obj, root):
+    draw_ib = str(obj.get("velo_zzz_draw_ib", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{8}", draw_ib):
+        raise PartitionError(f"对象 `{obj.name}` 缺少有效的 velo_zzz_draw_ib。")
+    if obj.get("velo_zzz_skeleton_mode") != "MERGED":
+        raise PartitionError(f"对象 `{obj.name}` 不是 ZZZ Merged 导入对象。")
+
+    candidates = []
+    user_collections = set(obj.users_collection)
+    for path in _collection_paths(root):
+        targets = [collection for collection in path if collection in user_collections]
+        draw_collections = [
+            collection for collection in path if _draw_ib_from_collection(collection) == draw_ib
+        ]
+        if targets and draw_collections:
+            candidates.append((draw_collections[-1], targets[-1]))
+    unique = {(draw.name, target.name): (draw, target) for draw, target in candidates}
+    if len(unique) != 1:
+        raise PartitionError(
+            f"对象 `{obj.name}` 无法在导出集合 `{root.name}` 中唯一确定 DrawIB/目标集合。"
+        )
+    draw_collection, target_collection = next(iter(unique.values()))
+    return {
+        "draw_ib": draw_ib,
+        "draw_ib_collection": draw_collection.name,
+        "target_collection": target_collection.name,
+        "display_name": target_collection.name,
+    }
+
+
+def _routes_json(routes) -> str:
+    return json.dumps(
+        [routes[label] for label in sorted(routes)],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _load_routes(reference, config):
+    raw = reference.get(ROUTES_KEY)
+    if raw:
+        try:
+            records = json.loads(raw)
+            routes = {int(record["label"]): record for record in records}
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            raise PartitionError("分区参考体的路由数据已损坏。") from exc
+    else:
+        labels = sorted(set(_component_values(reference.data)))
+        routes = {
+            label: {
+                "label": label,
+                "game": "ENDFIELD",
+                "component_id": label,
+                "display_name": f"C{label}",
+            }
+            for label in labels
+        }
+
+    if len(routes) < 2:
+        raise PartitionError("分区参考体至少需要两个有效路由。")
+    route_games = {str(route.get("game", "")) for route in routes.values()}
+    if route_games != {config.game}:
+        raise PartitionError("分区参考体与当前选择的游戏工作流不匹配。")
+    return routes
+
+
+def _palettes_for_routes(config, routes):
+    if config.game == "ENDFIELD":
+        palettes = {
+            label: config.palettes.get(int(route.get("component_id", label)), set())
+            for label, route in routes.items()
+        }
+    else:
+        palettes = {
+            label: config.palettes.get(str(route.get("draw_ib", "")).lower(), set())
+            for label, route in routes.items()
+        }
+    missing = [
+        routes[label].get("display_name", str(label))
+        for label, palette in palettes.items()
+        if not palette
+    ]
+    if missing:
+        raise PartitionError("以下分区没有可用的 Merged palette：" + ", ".join(missing))
+    return palettes
 
 
 def _remember_and_hide(obj) -> None:
@@ -236,28 +386,59 @@ def _remove_object(obj) -> None:
         bpy.data.meshes.remove(mesh)
 
 
-def _safe_reference_sources(selected, legacy):
-    sources = []
+def _safe_reference_sources(selected, legacy, config):
+    candidates = []
     for obj in selected:
         if obj == legacy or obj.type != "MESH":
             continue
         if obj.get(ROLE_KEY) in {ROLE_REFERENCE, ROLE_MASTER, ROLE_OUTPUT, ROLE_DIAGNOSTIC}:
             continue
-        component_id = _component_id_from_object(obj)
-        if component_id is None:
-            continue
-        sources.append((obj, component_id))
-    if len({component_id for _obj, component_id in sources}) < 2:
-        raise PartitionError("请至少选择两个原始 EFMI Component 网格。")
+        if config.game == "ENDFIELD":
+            component_id = _component_id_from_object(obj)
+            if component_id is None:
+                continue
+            route = {
+                "label": component_id,
+                "game": "ENDFIELD",
+                "component_id": component_id,
+                "display_name": f"C{component_id}",
+            }
+            candidates.append((obj, component_id, route))
+        else:
+            route = _zzz_route_for_object(obj, config.root)
+            candidates.append((obj, None, route))
+
+    if config.game == "ZENLESS":
+        route_keys = sorted(
+            {
+                (route["draw_ib"], route["target_collection"])
+                for _obj, _label, route in candidates
+            }
+        )
+        labels = {route_key: index + 1 for index, route_key in enumerate(route_keys)}
+        sources = []
+        routes = {}
+        for obj, _label, route in candidates:
+            label = labels[(route["draw_ib"], route["target_collection"])]
+            route = dict(route, label=label, game="ZENLESS")
+            sources.append((obj, label))
+            routes[label] = route
+    else:
+        sources = [(obj, label) for obj, label, _route in candidates]
+        routes = {route["label"]: route for _obj, _label, route in candidates}
+
+    if len(routes) < 2:
+        game_name = "EFMI Component" if config.game == "ENDFIELD" else "ZZZ DrawIB/目标集合"
+        raise PartitionError(f"请至少选择两个不同的原始 {game_name} 网格。")
     if any(obj.data.shape_keys for obj, _component_id in sources):
         raise PartitionError("原始 Component 带有 ShapeKey；请使用未修改的导入对象创建参考体。")
     modified = [obj.name for obj, _component_id in sources if obj.modifiers]
     if modified:
         raise PartitionError(f"原始 Component 含 modifier：{', '.join(modified)}。")
-    return sources
+    return sources, routes
 
 
-def _make_reference(context, sources, partition_id: str):
+def _make_reference(context, sources, routes, partition_id: str):
     workspace = _workspace_collection(context.scene)
     duplicates = []
     duplicate_names = []
@@ -302,6 +483,7 @@ def _make_reference(context, sources, partition_id: str):
             [obj.name for obj, _component_id in sources], ensure_ascii=False
         )
         reference[SOURCE_COMPONENTS_KEY] = json.dumps(components)
+        reference[ROUTES_KEY] = _routes_json(routes)
         return reference, counts
     except Exception:
         for name in duplicate_names:
@@ -513,9 +695,8 @@ def _make_component_output(
         _validate_geometry_and_weights(master, output, source_vertices, source_weights)
 
         base_name = _strip_component_prefix(master.name)
-        output.name = f"Component {component_id} {base_name} [Velo Split]"
+        output.name = f"Partition {component_id} {base_name} [Velo Split]"
         output.data.name = output.name
-        output["velo_component_id"] = int(component_id)
         output[ROLE_KEY] = ROLE_DIAGNOSTIC
         output[PARTITION_ID_KEY] = partition_id
         output[GENERATED_KEY] = True
@@ -536,14 +717,34 @@ def _make_component_output(
         raise
 
 
-def _commit_outputs(context, root, master, reference, outputs, partition_id, projection) -> None:
+def _commit_outputs(
+    context,
+    config,
+    master,
+    reference,
+    outputs,
+    routes,
+    partition_id,
+    projection,
+) -> None:
     old_outputs = [
         obj
         for obj in bpy.data.objects
         if obj.get(ROLE_KEY) == ROLE_OUTPUT and obj.get(PARTITION_ID_KEY) == partition_id
     ]
     for component_id, output in outputs.items():
-        destination = _component_collection(root, component_id)
+        route = routes[component_id]
+        if config.game == "ENDFIELD":
+            destination = _component_collection(config.root, int(route["component_id"]))
+            output["velo_component_id"] = int(route["component_id"])
+        else:
+            destination = bpy.data.collections.get(str(route["target_collection"]))
+            if destination is None or destination not in set(_walk_collections(config.root)):
+                raise PartitionError(
+                    f"ZZZ 目标集合 `{route['target_collection']}` 不存在或不属于导出集合。"
+                )
+            output["velo_zzz_draw_ib"] = str(route["draw_ib"])
+            output["velo_zzz_skeleton_mode"] = "MERGED"
         if output.name not in destination.objects:
             destination.objects.link(output)
         for collection in list(output.users_collection):
@@ -554,6 +755,7 @@ def _commit_outputs(context, root, master, reference, outputs, partition_id, pro
     _write_partition_attributes(master.data, projection)
     master[ROLE_KEY] = ROLE_MASTER
     master[PARTITION_ID_KEY] = partition_id
+    master[ROUTES_KEY] = _routes_json(routes)
     if reference.get(ROLE_KEY) == ROLE_REFERENCE and reference.get(GENERATED_KEY):
         _remember_and_hide(reference)
 
@@ -562,7 +764,12 @@ def _commit_outputs(context, root, master, reference, outputs, partition_id, pro
             _remove_object(old_output)
     base_name = _strip_component_prefix(master.name)
     for component_id, output in outputs.items():
-        output.name = f"Component {component_id} {base_name} [Velo Split]"
+        route = routes[component_id]
+        if config.game == "ENDFIELD":
+            prefix = f"Component {int(route['component_id'])}"
+        else:
+            prefix = str(route["display_name"])
+        output.name = f"{prefix} {base_name} [Velo Split]"
         output.data.name = output.name
 
 
@@ -595,25 +802,23 @@ def _partition_id_for_target(reference, master) -> str:
 class VELO_OT_partition_create_reference(bpy.types.Operator):
     bl_idname = "velo.partition_create_reference"
     bl_label = "创建分区参考体"
-    bl_description = "从选中的原始 EFMI Component 创建带面级 Component ID 的合并参考体"
+    bl_description = "从选中的原始 Merged 部件创建带面级路由 ID 的合并参考体"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         settings = context.scene.velo_tools
         old_reference = settings.partition_reference_object
         try:
-            _cfg, _root, _source, palettes = _load_configuration(context.scene)
+            config = _load_configuration(context.scene)
             legacy = settings.partition_legacy_object
-            sources = _safe_reference_sources(list(context.selected_objects), legacy)
-            component_ids = {component_id for _obj, component_id in sources}
-            missing = sorted(item for item in component_ids if not palettes.get(item))
-            if missing:
-                raise PartitionError(
-                    "以下 Component 没有可用的 Merged palette："
-                    + ", ".join(f"C{item}" for item in missing)
-                )
+            sources, routes = _safe_reference_sources(
+                list(context.selected_objects), legacy, config
+            )
+            _palettes_for_routes(config, routes)
             partition_id = uuid.uuid4().hex
-            reference, counts = _make_reference(context, sources, partition_id)
+            reference, counts = _make_reference(
+                context, sources, routes, partition_id
+            )
 
             for source_object, _component_id in sources:
                 source_object[ROLE_KEY] = ROLE_SOURCE
@@ -628,7 +833,10 @@ class VELO_OT_partition_create_reference(bpy.types.Operator):
             settings.partition_reference_object = reference
             if old_reference is not None and old_reference != reference and old_reference.get(GENERATED_KEY):
                 _remove_object(old_reference)
-            summary = ", ".join(f"C{key}: {value} faces" for key, value in counts.items())
+            summary = ", ".join(
+                f"{routes[key]['display_name']}: {value} faces"
+                for key, value in counts.items()
+            )
             _set_status(settings, f"参考体已创建：{summary}")
             _select_objects(context, [reference], active=reference)
             self.report({"INFO"}, "分区参考体已创建。")
@@ -655,7 +863,7 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
         master = settings.partition_master_object
         staged = []
         try:
-            _cfg, root, _source, palettes = _load_configuration(context.scene)
+            config = _load_configuration(context.scene)
             if reference is None or reference.type != "MESH":
                 raise PartitionError("请选择有效的分区参考体。")
             if master is None or master.type != "MESH":
@@ -667,7 +875,15 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
             if not reference.get(PARTITION_ID_KEY):
                 reference[PARTITION_ID_KEY] = partition_id
 
+            routes = _load_routes(reference, config)
+            palettes = _palettes_for_routes(config, routes)
             projection = project_component_faces(reference, master)
+            unknown_labels = sorted(set(projection.labels) - set(routes))
+            if unknown_labels:
+                raise PartitionError(
+                    "投射结果包含没有路由记录的分区："
+                    + ", ".join(str(item) for item in unknown_labels)
+                )
             weights = prepare_component_weights(master, projection.labels, palettes)
             outputs = {}
             source_face_ids = []
@@ -693,16 +909,20 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
 
             _commit_outputs(
                 context,
-                root,
+                config,
                 master,
                 reference,
                 outputs,
+                routes,
                 partition_id,
                 projection,
             )
             settings.partition_master_object = master
             counts = component_counts(projection.labels)
-            summary = ", ".join(f"C{key}: {value}" for key, value in counts.items())
+            summary = ", ".join(
+                f"{routes[key]['display_name']}: {value}"
+                for key, value in counts.items()
+            )
             warning = (
                 f"；{len(weights.warning_vertices)} 个顶点丢弃 5%-10% 权重"
                 if weights.warning_vertices
@@ -784,7 +1004,7 @@ class VELO_OT_partition_restore_sources(bpy.types.Operator):
             if role in {ROLE_SOURCE, ROLE_REFERENCE, ROLE_MASTER, ROLE_DIAGNOSTIC}:
                 if role in {ROLE_SOURCE, ROLE_REFERENCE, ROLE_DIAGNOSTIC}:
                     _restore_visibility(obj)
-                for key in (ROLE_KEY, PARTITION_ID_KEY, GENERATED_KEY):
+                for key in (ROLE_KEY, PARTITION_ID_KEY, GENERATED_KEY, ROUTES_KEY):
                     if key in obj:
                         del obj[key]
 
@@ -795,6 +1015,8 @@ class VELO_OT_partition_restore_sources(bpy.types.Operator):
                 AMBIGUOUS_ATTRIBUTE,
             ):
                 _remove_attribute(master.data, attribute_name)
+            if ROUTES_KEY in master:
+                del master[ROUTES_KEY]
         settings.partition_master_object = None
         _set_status(settings, "已恢复原始 Component，并移除分区生成结果。")
         self.report({"INFO"}, "原始 Component 已恢复。")

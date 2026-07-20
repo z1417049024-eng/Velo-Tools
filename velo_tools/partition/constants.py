@@ -1,10 +1,11 @@
-"""Shared identifiers for EFMI Component partition authoring."""
+"""Shared identifiers for Merged Component partition authoring."""
 
 ROLE_KEY = "velo_partition_role"
 PARTITION_ID_KEY = "velo_partition_id"
 GENERATED_KEY = "velo_partition_generated"
 SOURCE_NAMES_KEY = "velo_partition_source_names"
 SOURCE_COMPONENTS_KEY = "velo_partition_source_components"
+ROUTES_KEY = "velo_partition_routes"
 
 ROLE_SOURCE = "source"
 ROLE_REFERENCE = "reference"

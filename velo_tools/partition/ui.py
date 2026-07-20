@@ -1,4 +1,4 @@
-"""N-panel UI for EFMI Component partitioning."""
+"""N-panel UI for Merged Component partitioning."""
 
 import textwrap
 
@@ -11,7 +11,7 @@ def _is_partition_tab(context):
 
 
 class VELO_PT_partition(bpy.types.Panel):
-    bl_label = "EFMI Merged 分割操作"
+    bl_label = "Merged Component 分割"
     bl_idname = "VELO_PT_partition"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -26,12 +26,32 @@ class VELO_PT_partition(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.velo_tools
-        cfg = getattr(context.scene, "VTEF_settings", None)
+        layout.prop(settings, "active_game", text="游戏")
+
+        game = settings.active_game
+        if game == "ENDFIELD":
+            cfg = getattr(context.scene, "VTEF_settings", None)
+        elif game == "ZENLESS":
+            cfg = getattr(context.scene, "VTZZ_properties_generate_mod", None)
+        else:
+            layout.label(text="当前仅支持 EFMI / ZZZ Merged", icon="ERROR")
+            return
 
         column = layout.column(align=True)
-        if cfg is not None:
+        if game == "ENDFIELD" and cfg is not None:
             column.prop(cfg, "component_collection", text="组件集合")
             column.prop(cfg, "object_source_folder", text="对象源目录")
+            column.prop(cfg, "mod_skeleton_type", text="骨架模式")
+        elif game == "ZENLESS" and cfg is not None:
+            from ..games.zenless_zone_zero._zzmi_core.config.main_config import GlobalConfig
+
+            GlobalConfig.read_from_main_json()
+            column.label(
+                text=f"DBMT workspace: {GlobalConfig.workspacename or '未选择'}",
+                icon="FILE_FOLDER",
+            )
+            column.prop(cfg, "component_collection", text="导出部件集合")
+            column.prop(cfg, "skeleton_mode", text="骨架模式")
         column.prop(settings, "partition_legacy_object", text="旧手工合并体")
         column.operator("velo.partition_create_reference", icon="AUTOMERGE_ON")
 
