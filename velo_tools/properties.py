@@ -1032,8 +1032,8 @@ class VELO_PartitionWholeMeshItem(bpy.types.PropertyGroup):
     )
     source_id: StringProperty(default="", options={'HIDDEN'})
     home_component: IntProperty(
-        name="归属 Component",
-        description="整体模型在原始整体区中存放的 Cx；不改变最终分割路由",
+        name="整体区存放 Component",
+        description="只决定完整模型在原始整体区存放于哪个 Cx，不改变同步后的分割路由",
         default=0,
         min=0,
         max=15,
@@ -1314,14 +1314,16 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
     partition_register_component: IntProperty(
-        name="归属 Component",
-        description="把新登记的整体模型放入原始整体区的 Cx",
+        name="整体区存放 Component",
+        description="把新登记的整体模型放入原始整体区的 Cx；这不是最终分割结果",
         default=0,
         min=0,
         max=15,
     )
     partition_whole_mesh_items: CollectionProperty(type=VELO_PartitionWholeMeshItem)
     partition_whole_mesh_index: IntProperty(default=0)
+    partition_mesh_split_active: BoolProperty(default=False, options={'HIDDEN'})
+    partition_mesh_split_object: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
     partition_registry_migrated: BoolProperty(default=False, options={'HIDDEN'})
     partition_imported_captured: BoolProperty(default=False, options={'HIDDEN'})
     partition_output_mode: EnumProperty(

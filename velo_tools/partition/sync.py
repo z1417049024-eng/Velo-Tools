@@ -9,6 +9,7 @@ import uuid
 from array import array
 from pathlib import Path
 
+import bmesh
 import bpy
 
 from . import operators as legacy
@@ -37,6 +38,10 @@ from .constants import (
     SYNC_FORMAT_VERSION,
     SYNC_MANIFEST_KEY,
     SYNC_VERSION_KEY,
+    WHOLE_SPLIT_COLLECTION_KEY,
+    WHOLE_SPLIT_GROUP_KEY,
+    WHOLE_SPLIT_GUIDE_KEY,
+    WHOLE_SPLIT_NAME_KEY,
 )
 
 
@@ -48,6 +53,7 @@ _COMPONENT_PREFIX_RE = re.compile(
 _GENERATED_SUFFIX_RE = re.compile(r"\s*\[(?:Velo Split|Velo Sync)\](?:\.\d{3})?$", re.IGNORECASE)
 _DUPLICATE_SUFFIX_RE = re.compile(r"\.\d{3}$")
 _TOPOLOGY_MODIFIERS = legacy._TOPOLOGY_MODIFIERS
+_MOVING_SPLIT_GROUPS = set()
 
 
 def _settings(scene):
@@ -224,6 +230,49 @@ def _component_collection(root, component_id: int):
     return collection
 
 
+def _split_collection(root, group_id: str):
+    if root is None or not group_id:
+        return None
+    return next(
+        (
+            collection
+            for collection in _walk_collections(root)
+            if collection.get(WHOLE_SPLIT_COLLECTION_KEY)
+            and str(collection.get(WHOLE_SPLIT_GROUP_KEY, "") or "") == group_id
+        ),
+        None,
+    )
+
+
+def _split_group_name(obj) -> str:
+    stored = str(obj.get(WHOLE_SPLIT_NAME_KEY, "") or "").strip()
+    if stored:
+        return stored
+    base = _COMPONENT_PREFIX_RE.sub("", str(obj.name or ""), count=1).strip()
+    base = _DUPLICATE_SUFFIX_RE.sub("", base).strip() or "整体模型"
+    return f"{base} [完整模型分割]"
+
+
+def _ensure_authoring_split_collection(root, obj, component_id: int):
+    group_id = str(obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
+    if not group_id:
+        return None
+    collection = _split_collection(root, group_id)
+    destination = _component_collection(root, component_id)
+    if collection is None:
+        collection = bpy.data.collections.new(_split_group_name(obj))
+        collection[WHOLE_SPLIT_COLLECTION_KEY] = True
+        collection[WHOLE_SPLIT_GROUP_KEY] = group_id
+        collection[WHOLE_SPLIT_NAME_KEY] = _split_group_name(obj)
+        collection.color_tag = "COLOR_04"
+    if collection.name not in destination.children:
+        destination.children.link(collection)
+    for component in root.children:
+        if component != destination and collection.name in component.children:
+            component.children.unlink(collection)
+    return collection
+
+
 def _rename_component_prefix(obj, component_id: int):
     name = str(obj.name or "")
     if _COMPONENT_RE.match(name):
@@ -244,14 +293,46 @@ def move_whole_mesh_to_home(scene, obj, component_id: int):
     component_id = int(component_id)
     if not 0 <= component_id <= 15:
         raise PartitionError("整体模型归属 Component 必须位于 C0-C15。")
-    destination = _component_collection(root, component_id)
-    if obj.name not in destination.objects:
-        destination.objects.link(obj)
-    for collection in list(obj.users_collection):
-        if collection != destination:
-            collection.objects.unlink(obj)
-    obj["velo_component_id"] = component_id
-    _rename_component_prefix(obj, component_id)
+    group_id = str(obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
+    if group_id:
+        if group_id in _MOVING_SPLIT_GROUPS:
+            return
+        _MOVING_SPLIT_GROUPS.add(group_id)
+        try:
+            destination = _ensure_authoring_split_collection(root, obj, component_id)
+            members = [
+                row.object
+                for row in settings.partition_whole_mesh_items
+                if row.object is not None
+                and str(row.object.get(WHOLE_SPLIT_GROUP_KEY, "") or "") == group_id
+            ]
+            if obj not in members:
+                members.append(obj)
+            for member in members:
+                if member.name not in destination.objects:
+                    destination.objects.link(member)
+                for collection in list(member.users_collection):
+                    if collection != destination:
+                        collection.objects.unlink(member)
+                member["velo_component_id"] = component_id
+                member[WHOLE_SPLIT_NAME_KEY] = str(
+                    destination.get(WHOLE_SPLIT_NAME_KEY, destination.name)
+                )
+                _rename_component_prefix(member, component_id)
+            for row in settings.partition_whole_mesh_items:
+                if row.object in members and int(row.home_component) != component_id:
+                    row.home_component = component_id
+        finally:
+            _MOVING_SPLIT_GROUPS.discard(group_id)
+    else:
+        destination = _component_collection(root, component_id)
+        if obj.name not in destination.objects:
+            destination.objects.link(obj)
+        for collection in list(obj.users_collection):
+            if collection != destination:
+                collection.objects.unlink(obj)
+        obj["velo_component_id"] = component_id
+        _rename_component_prefix(obj, component_id)
     settings.partition_status = "整体区已修改，需要重新同步。"
 
 
@@ -483,7 +564,8 @@ def _prepare_workflow(context, *, rebuild_reference=False):
     body = settings.partition_master_object
     if body is None or body.type != "MESH":
         raise PartitionError("请先选择身体并点击“创建基准身体”。")
-    if not any(obj is body for _item, obj in _whole_mesh_rows(settings)):
+    body_is_split_guide = bool(body.get(WHOLE_SPLIT_GUIDE_KEY))
+    if not body_is_split_guide and not any(obj is body for _item, obj in _whole_mesh_rows(settings)):
         _register_whole_mesh(settings, authoring, body, _object_component(body))
     body_id = _ensure_source_id(body)
     reference = settings.partition_reference_object
@@ -514,7 +596,7 @@ def _prepare_workflow(context, *, rebuild_reference=False):
         source[ROLE_KEY] = ROLE_SOURCE
         source[PARTITION_ID_KEY] = body_id
         legacy._remember_and_hide(source)
-    body[ROLE_KEY] = ROLE_MASTER
+    body[ROLE_KEY] = ROLE_DIAGNOSTIC if body_is_split_guide else ROLE_MASTER
     body[PARTITION_ID_KEY] = body_id
     _capture_imported_objects(settings, authoring)
     return settings, cfg, authoring, body, reference, counts
@@ -531,6 +613,7 @@ def _validate_modifiers(obj):
 
 def _resolve_merge_map(settings, routes, config, body):
     body_id = _ensure_source_id(body)
+    body_group_id = str(body.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
     for index, item in enumerate(settings.partition_merge_items):
         for obj in (item.source_object, item.target_object):
             if obj is None:
@@ -542,6 +625,10 @@ def _resolve_merge_map(settings, routes, config, body):
                 continue
             belongs_to_body = (
                 str(obj.get(SOURCE_ID_KEY, "") or "") == body_id
+                or (
+                    body_group_id
+                    and str(obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "") == body_group_id
+                )
                 or (
                     obj.get(ROLE_KEY) == ROLE_SOURCE
                     and str(obj.get(PARTITION_ID_KEY, "") or "") == body_id
@@ -582,6 +669,23 @@ def _remove_collection_tree(root):
             bpy.data.collections.remove(collection)
 
 
+def _output_split_collection(destination, source_obj, component_id: int, desired_collections):
+    group_id = str(source_obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
+    if not group_id:
+        return destination
+    for collection in destination.children:
+        if str(collection.get(WHOLE_SPLIT_GROUP_KEY, "") or "") == group_id:
+            return collection
+    collection = bpy.data.collections.new(f".__VELO_STAGING_SPLIT__{uuid.uuid4().hex}")
+    collection[WHOLE_SPLIT_COLLECTION_KEY] = True
+    collection[WHOLE_SPLIT_GROUP_KEY] = group_id
+    collection[WHOLE_SPLIT_NAME_KEY] = _split_group_name(source_obj)
+    collection.color_tag = "COLOR_04"
+    destination.children.link(collection)
+    desired_collections[collection] = f"C{component_id} {_split_group_name(source_obj)}"
+    return collection
+
+
 def _place_output(output, destination, component_id: int, source_obj, desired_names):
     source_id = _ensure_source_id(source_obj)
     base_name = _strip_component_name(source_obj.name)
@@ -591,6 +695,10 @@ def _place_output(output, destination, component_id: int, source_obj, desired_na
     output[SOURCE_ID_KEY] = source_id
     output["velo_component_id"] = component_id
     output[PARTITION_ID_KEY] = source_id
+    group_id = str(source_obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
+    if group_id:
+        output[WHOLE_SPLIT_GROUP_KEY] = group_id
+        output[WHOLE_SPLIT_NAME_KEY] = _split_group_name(source_obj)
     for key in (PART_INDEX_KEY, PART_COLLECTION_KEY):
         if key in output:
             del output[key]
@@ -614,6 +722,7 @@ def _split_one(
     palettes,
     components,
     desired_names,
+    desired_collections,
     *,
     emit=True,
     merge_map=None,
@@ -628,7 +737,8 @@ def _split_one(
     if unknown:
         raise PartitionError("投射结果包含未知 Component：" + ", ".join(map(str, unknown)))
     legacy._write_partition_attributes(source_obj.data, projection)
-    source_obj[ROLE_KEY] = ROLE_MASTER
+    if not source_obj.get(WHOLE_SPLIT_GUIDE_KEY):
+        source_obj[ROLE_KEY] = ROLE_MASTER
     source_obj[PARTITION_ID_KEY] = source_id
     if not emit:
         return [], projection, None
@@ -654,7 +764,13 @@ def _split_one(
         )
         if output is None:
             continue
-        _place_output(output, components[component_id], component_id, source_obj, desired_names)
+        destination = _output_split_collection(
+            components[component_id],
+            source_obj,
+            component_id,
+            desired_collections,
+        )
+        _place_output(output, destination, component_id, source_obj, desired_names)
         outputs.append(output)
         source_faces.extend(faces)
     if sorted(source_faces) != list(range(len(source_obj.data.polygons))):
@@ -874,8 +990,26 @@ def build_sync_manifest(scene) -> str:
     visible_whole = set(_whole_meshes(settings, include_hidden=False))
     for item, obj in _whole_mesh_rows(settings):
         _hash_bytes(hasher, f"whole:{item.source_id}:{item.home_component}:{obj in visible_whole}")
+        _hash_bytes(
+            hasher,
+            f"whole_split:{obj.get(WHOLE_SPLIT_GROUP_KEY, '')}:{obj.get(WHOLE_SPLIT_NAME_KEY, '')}",
+        )
+        _hash_bytes(
+            hasher,
+            "whole_split_collections:"
+            + repr(
+                sorted(
+                    collection.name
+                    for collection in obj.users_collection
+                    if collection.get(WHOLE_SPLIT_COLLECTION_KEY)
+                )
+            ),
+        )
         if obj in visible_whole or obj is body:
             _hash_object(hasher, obj)
+    if body.get(WHOLE_SPLIT_GUIDE_KEY):
+        _hash_bytes(hasher, f"split_guide:{body.get(SOURCE_ID_KEY, '')}")
+        _hash_object(hasher, body)
     all_imported = _collect_imported_rows(settings, include_hidden=True)
     visible_imported = set(obj for obj, _component_id in _collect_imported_rows(settings))
     for obj, component_id in all_imported:
@@ -921,6 +1055,13 @@ def build_output_manifest(root, desired_names=None) -> str:
     ):
         _hash_bytes(hasher, f"output_component:{component_id}")
         _hash_bytes(hasher, f"output_name:{names.get(obj, obj.name)}")
+        group_id = str(obj.get(WHOLE_SPLIT_GROUP_KEY, "") or "")
+        group_collections = sorted(
+            collection.name
+            for collection in obj.users_collection
+            if collection.get(WHOLE_SPLIT_COLLECTION_KEY)
+        )
+        _hash_bytes(hasher, f"output_split:{group_id}:{group_collections}")
         _hash_object(hasher, obj, include_visibility=False, include_name=False)
     return hasher.hexdigest()
 
@@ -931,6 +1072,12 @@ def _normalize_names(desired_names):
             continue
         obj.name = desired
         obj.data.name = obj.name
+
+
+def _normalize_collection_names(desired_names):
+    for collection, desired in desired_names.items():
+        if collection.name in bpy.data.collections:
+            collection.name = desired
 
 
 def _remove_legacy_generated_outputs(exclude_root=None):
@@ -955,7 +1102,8 @@ def _sync_impl(context):
     _validate_reference(reference)
     whole_rows = _whole_mesh_rows(settings)
     whole_all = [obj for _item, obj in whole_rows]
-    if body not in whole_all:
+    body_is_split_guide = bool(body.get(WHOLE_SPLIT_GUIDE_KEY))
+    if body not in whole_all and not body_is_split_guide:
         raise PartitionError("基准身体没有登记为整体模型。")
     whole_visible = set(_whole_meshes(settings))
     imported_rows = _collect_imported_rows(settings)
@@ -971,11 +1119,18 @@ def _sync_impl(context):
     stage_root = None
     staged_outputs = []
     desired_names = {}
+    desired_collections = {}
     old_zone = settings.partition_export_collection
     old_cfg_root = cfg.component_collection
     committed = False
     progress = context.window_manager
-    progress_total = max(1, len(whole_all) + len(imported_rows) + len(passthrough_rows))
+    progress_total = max(
+        1,
+        len(whole_all)
+        + (1 if body_is_split_guide else 0)
+        + len(imported_rows)
+        + len(passthrough_rows),
+    )
     progress_value = 0
     progress.progress_begin(0, progress_total)
     settings.partition_status = "正在同步整体区到分割区..."
@@ -991,7 +1146,8 @@ def _sync_impl(context):
             palettes,
             components,
             desired_names,
-            emit=body in whole_visible,
+            desired_collections,
+            emit=not body_is_split_guide and body in whole_visible,
             merge_map=merge_map,
         )
         staged_outputs.extend(body_outputs)
@@ -1014,6 +1170,7 @@ def _sync_impl(context):
                 palettes,
                 components,
                 desired_names,
+                desired_collections,
                 merge_map={},
             )
             staged_outputs.extend(outputs)
@@ -1051,6 +1208,7 @@ def _sync_impl(context):
             _remove_collection_tree(old_zone)
         _remove_legacy_generated_outputs(stage_root)
         stage_root.name = desired_root_name
+        _normalize_collection_names(desired_collections)
         _normalize_names(desired_names)
         legacy._refresh_component_merge_objects(settings, _ensure_source_id(body), body_output_map)
         output_manifest = build_output_manifest(stage_root)
@@ -1333,6 +1491,150 @@ class VELO_OT_partition_add_whole_meshes(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class VELO_OT_partition_split_whole_mesh(bpy.types.Operator):
+    bl_idname = "velo.partition_split_whole_mesh"
+    bl_label = "分割完整模型"
+    bl_description = "第一次点击进入面选择，第二次点击把所选面分成新的强关联整体模型"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def _start(self, context, settings):
+        _ensure_merged(context.scene)
+        if context.mode != 'OBJECT':
+            raise PartitionError("开始分割前请先回到对象模式。")
+        source = context.active_object
+        registered = {
+            obj for _item, obj in _whole_mesh_rows(settings)
+        }
+        if source is None or source.type != "MESH" or source not in registered:
+            raise PartitionError("请选择已经加入列表的整体模型。")
+        if len(source.data.polygons) < 2:
+            raise PartitionError("整体模型至少需要两个面才能分割。")
+        settings.partition_mesh_split_object = source
+        settings.partition_mesh_split_active = True
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        source.hide_set(False)
+        source.hide_viewport = False
+        source.select_set(True)
+        context.view_layer.objects.active = source
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='FACE')
+        bpy.ops.mesh.select_all(action='DESELECT')
+        settings.partition_status = "请选择要分离的面，然后点击“完成分割”。"
+        self.report({'INFO'}, settings.partition_status)
+        return {'FINISHED'}
+
+    def _create_standard_body_guide(self, context, settings, source):
+        guide = source.copy()
+        guide.data = source.data.copy()
+        guide.name = f"VELO Split Guide {_strip_component_name(source.name)}"
+        guide.data.name = guide.name
+        legacy._workspace_collection(context.scene).objects.link(guide)
+        guide[WHOLE_SPLIT_GUIDE_KEY] = True
+        guide[GENERATED_KEY] = True
+        guide[ROLE_KEY] = ROLE_DIAGNOSTIC
+        guide_id = _ensure_source_id(source)
+        guide[SOURCE_ID_KEY] = guide_id
+        guide[PARTITION_ID_KEY] = guide_id
+        guide.hide_render = True
+        guide.hide_viewport = True
+        try:
+            guide.hide_set(True)
+        except RuntimeError:
+            pass
+        settings.partition_master_object = guide
+        return guide
+
+    def _finish(self, context, settings):
+        source = settings.partition_mesh_split_object
+        if source is None or source.type != "MESH" or source.name not in bpy.data.objects:
+            settings.partition_mesh_split_active = False
+            settings.partition_mesh_split_object = None
+            raise PartitionError("待分割的整体模型已经不存在。")
+        if context.mode != 'EDIT_MESH' or context.active_object is not source:
+            raise PartitionError("请保持当前整体模型处于编辑模式，然后点击“完成分割”。")
+
+        edit_mesh = bmesh.from_edit_mesh(source.data)
+        selected_count = sum(1 for face in edit_mesh.faces if face.select)
+        if selected_count == 0:
+            raise PartitionError("没有选择任何面。")
+        if selected_count == len(edit_mesh.faces):
+            raise PartitionError("不能选择全部面；请让两部分都至少保留一个面。")
+        bmesh.update_edit_mesh(source.data, loop_triangles=False, destructive=False)
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+        guide = None
+        if source is settings.partition_master_object:
+            guide = self._create_standard_body_guide(context, settings, source)
+
+        before = set(bpy.data.objects)
+        try:
+            context.view_layer.objects.active = source
+            source.select_set(True)
+            bpy.ops.object.mode_set(mode='EDIT')
+            result = bpy.ops.mesh.separate(type='SELECTED')
+            if result != {'FINISHED'}:
+                raise PartitionError("Blender 没有完成所选面的分离。")
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            if context.mode == 'EDIT_MESH':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            if guide is not None and guide.name in bpy.data.objects:
+                settings.partition_master_object = source
+                legacy._remove_object(guide)
+            raise
+
+        separated = [obj for obj in set(bpy.data.objects) - before if obj.type == 'MESH']
+        if not separated:
+            if guide is not None and guide.name in bpy.data.objects:
+                settings.partition_master_object = source
+                legacy._remove_object(guide)
+            raise PartitionError("没有找到分离后生成的新模型。")
+
+        row = next(item for item in settings.partition_whole_mesh_items if item.object is source)
+        component_id = int(row.home_component)
+        group_id = str(source.get(WHOLE_SPLIT_GROUP_KEY, "") or "") or uuid.uuid4().hex
+        group_name = _split_group_name(source)
+        if guide is not None:
+            guide[WHOLE_SPLIT_GROUP_KEY] = group_id
+            guide[WHOLE_SPLIT_NAME_KEY] = group_name
+        pieces = [source] + separated
+        for piece in pieces:
+            piece[WHOLE_SPLIT_GROUP_KEY] = group_id
+            piece[WHOLE_SPLIT_NAME_KEY] = group_name
+            piece[ROLE_KEY] = ROLE_MASTER
+        for piece in separated:
+            for key in (SOURCE_ID_KEY, PARTITION_ID_KEY):
+                if key in piece:
+                    del piece[key]
+        for piece in pieces:
+            _register_whole_mesh(settings, settings.partition_authoring_collection, piece, component_id)
+
+        settings.partition_mesh_split_active = False
+        settings.partition_mesh_split_object = None
+        settings.partition_status = (
+            f"完整模型已分成 {len(pieces)} 个强关联模型，需要同步到分割区。"
+        )
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for piece in pieces:
+            piece.select_set(True)
+        context.view_layer.objects.active = separated[0]
+        self.report({'INFO'}, settings.partition_status)
+        return {'FINISHED'}
+
+    def execute(self, context):
+        settings = context.scene.velo_tools
+        try:
+            if settings.partition_mesh_split_active:
+                return self._finish(context, settings)
+            return self._start(context, settings)
+        except Exception as exc:
+            settings.partition_status = str(exc)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
 class VELO_OT_partition_initialize_zones(bpy.types.Operator):
     bl_idname = "velo.partition_initialize_zones"
     bl_label = "初始化并生成工作分割区"
@@ -1383,6 +1685,7 @@ _CLASSES = (
     VELO_OT_partition_passthrough_remove,
     VELO_OT_partition_create_standard_body,
     VELO_OT_partition_add_whole_meshes,
+    VELO_OT_partition_split_whole_mesh,
     VELO_OT_partition_initialize_zones,
     VELO_OT_partition_sync_zones,
 )

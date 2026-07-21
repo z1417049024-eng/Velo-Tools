@@ -32,9 +32,17 @@ A body, garment, or other intact mesh that an author explicitly registers for Co
 
 The first body registered as a Whole Mesh. Its projected Component boundaries and Block Reassignment rules are the standard applied to every later Whole Mesh. A hidden Partition Standard Body is omitted from export but remains the partition reference for other Whole Meshes.
 
+## Whole Mesh Split Group
+
+A stable group of authoring meshes created by separating selected faces from one Whole Mesh. Every member has its own source identity and Component outputs, while all members share one non-nested collection in their home Component. Repeated separation adds members to the same group instead of creating nested collections.
+
+## Partition Projection Guide
+
+The hidden intact snapshot retained when the Partition Standard Body is separated into a Whole Mesh Split Group. It preserves a complete projection surface for later garments but never produces runtime geometry.
+
 ## Export Zone
 
-A read-only, exportable mirror of the Authoring Zone. It contains direct `C0` through `C15` Component outputs and is replaced only by a successful synchronization.
+A read-only, exportable mirror of the Authoring Zone. It contains `C0` through `C15` Component outputs. Whole Mesh Split Group outputs use one matching non-nested child collection per generated Component. The zone is replaced only by a successful synchronization.
 
 ## Sync Snapshot
 

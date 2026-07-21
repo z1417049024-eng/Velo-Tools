@@ -64,18 +64,37 @@ class VELO_PT_partition(bpy.types.Panel):
         whole.label(
             text=f"活动 Mesh：{active.name if active is not None and active.type == 'MESH' else '未选择'}"
         )
-        whole.prop(settings, "partition_register_component", text="部件")
+        whole.prop(settings, "partition_register_component", text="整体区存放 C")
         buttons = whole.row(align=True)
         standard_label = "设为基准身体" if settings.partition_master_object else "创建基准身体"
         buttons.operator("velo.partition_create_standard_body", text=standard_label, icon="ARMATURE_DATA")
         buttons.operator("velo.partition_add_whole_meshes", text="加入整体模型", icon="ADD")
+        split_label = "完成分割" if settings.partition_mesh_split_active else "分割完整模型"
+        whole.operator(
+            "velo.partition_split_whole_mesh",
+            text=split_label,
+            icon="CHECKMARK" if settings.partition_mesh_split_active else "MOD_BOOLEAN",
+        )
 
+        master_group_id = (
+            str(settings.partition_master_object.get("velo_partition_whole_split_group", "") or "")
+            if settings.partition_master_object is not None
+            else ""
+        )
         for item in settings.partition_whole_mesh_items:
             row = whole.row(align=True)
-            icon = "SOLO_ON" if item.object is settings.partition_master_object else "MESH_DATA"
+            item_group_id = (
+                str(item.object.get("velo_partition_whole_split_group", "") or "")
+                if item.object is not None
+                else ""
+            )
+            is_standard = item.object is settings.partition_master_object or (
+                master_group_id and item_group_id == master_group_id
+            )
+            icon = "SOLO_ON" if is_standard else "MESH_DATA"
             name = item.object.name if item.object is not None else "已删除"
             row.label(text=name, icon=icon)
-            row.prop(item, "home_component", text="部件")
+            row.prop(item, "home_component", text="存放 C")
 
         rules = layout.box()
         rules.enabled = is_merged and settings.partition_master_object is not None
