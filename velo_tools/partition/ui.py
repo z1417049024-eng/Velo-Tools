@@ -64,7 +64,7 @@ class VELO_PT_partition(bpy.types.Panel):
         whole.label(
             text=f"活动 Mesh：{active.name if active is not None and active.type == 'MESH' else '未选择'}"
         )
-        whole.prop(settings, "partition_register_component", text="归属 C", slider=True)
+        whole.prop(settings, "partition_register_component", text="部件")
         buttons = whole.row(align=True)
         standard_label = "设为基准身体" if settings.partition_master_object else "创建基准身体"
         buttons.operator("velo.partition_create_standard_body", text=standard_label, icon="ARMATURE_DATA")
@@ -75,7 +75,7 @@ class VELO_PT_partition(bpy.types.Panel):
             icon = "SOLO_ON" if item.object is settings.partition_master_object else "MESH_DATA"
             name = item.object.name if item.object is not None else "已删除"
             row.label(text=name, icon=icon)
-            row.prop(item, "home_component", text="C", slider=True)
+            row.prop(item, "home_component", text="部件")
 
         rules = layout.box()
         rules.enabled = is_merged and settings.partition_master_object is not None
@@ -103,7 +103,7 @@ class VELO_PT_partition(bpy.types.Panel):
             else:
                 row.prop(item, "source_object", text="")
             row.label(text="", icon="FORWARD")
-            row.prop(item, "target_component", text="C", slider=True)
+            row.prop(item, "target_component", text="部件")
             remove = row.operator("velo.partition_passthrough_remove", text="", icon="X")
             remove.item_index = index
 

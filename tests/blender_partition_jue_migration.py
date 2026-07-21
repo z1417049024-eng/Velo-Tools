@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from collections import Counter
@@ -88,6 +89,41 @@ def main():
 
     validation = validate_export_state(scene)
     assert validation is None, validation
+
+    def export_mod(export_dir):
+        cfg.mod_output_folder = str(export_dir)
+        cfg.copy_textures = False
+        cfg.write_ini = True
+        assert bpy.ops.vtef.export_mod() == {'FINISHED'}
+        assert (export_dir / "mod.ini").is_file()
+        assert (export_dir / "Meshes").is_dir()
+        assert any(path.is_file() for path in (export_dir / "Meshes").rglob("*"))
+        return {
+            path.relative_to(export_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in export_dir.rglob("*")
+            if path.is_file()
+        }
+
+    compare_path = os.environ.get("VELO_TEST_EXPORT_COMPARE_DIR", "")
+    if compare_path:
+        compare_dir = Path(compare_path)
+        settings.partition_preview_mode = "AUTHORING"
+        authoring_files = export_mod(compare_dir / "authoring")
+        settings.partition_preview_mode = "EXPORT"
+        export_files = export_mod(compare_dir / "export")
+        assert authoring_files == export_files, {
+            "missing_in_authoring": sorted(set(export_files) - set(authoring_files)),
+            "missing_in_export": sorted(set(authoring_files) - set(export_files)),
+            "content_mismatch": sorted(
+                name
+                for name in set(authoring_files).intersection(export_files)
+                if authoring_files[name] != export_files[name]
+            ),
+        }
+    else:
+        export_path = os.environ.get("VELO_TEST_EXPORT_DIR", "")
+        if export_path:
+            export_mod(Path(export_path))
     print(
         "VELO_JUE_MIGRATION_OK",
         f"whole={len(settings.partition_whole_mesh_items)}",
