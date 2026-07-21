@@ -152,7 +152,12 @@ def build_cpu_posed_placeholder_merged_object(exporter: Any, component_id: int) 
     ):
         if getattr(obj, "type", None) != "MESH":
             continue
-        if bool(getattr(cfg, "ignore_hidden_objects", False)) and object_is_hidden(obj):
+        managed_output = str(obj.get("velo_partition_role", "")).lower() == "output"
+        if (
+            bool(getattr(cfg, "ignore_hidden_objects", False))
+            and not managed_output
+            and object_is_hidden(obj)
+        ):
             continue
         if (getattr(obj, "name", "") or "").startswith("TEMP_"):
             continue
