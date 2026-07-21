@@ -26,6 +26,8 @@ from .constants import (
     COMPONENT_ATTRIBUTE,
     CONFIDENCE_ATTRIBUTE,
     GENERATED_KEY,
+    PART_COLLECTION_KEY,
+    PART_INDEX_KEY,
     PARTITION_ID_KEY,
     PREVIOUS_HIDE_GET_KEY,
     PREVIOUS_HIDE_RENDER_KEY,
@@ -49,6 +51,8 @@ from .constants import (
 _COMPONENT_NAME_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
 _COMPONENT_COLLECTION_RE = re.compile(r"^c(\d+)$", re.IGNORECASE)
 _DRAW_IB_RE = re.compile(r"^([0-9a-f]{8})(?:_|$)", re.IGNORECASE)
+_PART_COLLECTION_RE = re.compile(r"^part\.(\d+)$", re.IGNORECASE)
+_PART_COLORS = tuple(f"COLOR_{index:02d}" for index in range(1, 9))
 _TOPOLOGY_MODIFIERS = {
     "ARRAY",
     "BEVEL",
@@ -256,6 +260,88 @@ def _component_collection(root, component_id: int):
     return collection
 
 
+def _part_indices(root) -> set[int]:
+    indices = set()
+    for collection in _walk_collections(root):
+        raw = collection.get(PART_INDEX_KEY)
+        try:
+            if raw is not None:
+                indices.add(int(raw))
+                continue
+        except (TypeError, ValueError):
+            pass
+        match = _PART_COLLECTION_RE.match(collection.name)
+        if match:
+            indices.add(int(match.group(1)))
+    for obj in root.all_objects:
+        try:
+            index = int(obj.get(PART_INDEX_KEY, 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index > 0:
+            indices.add(index)
+    return indices
+
+
+def _object_part_index(obj) -> int:
+    try:
+        return max(0, int(obj.get(PART_INDEX_KEY, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _next_part_index(root) -> int:
+    return max(_part_indices(root), default=0) + 1
+
+
+def _part_collection(root, part_index: int, parent):
+    for collection in parent.children:
+        try:
+            index = int(collection.get(PART_INDEX_KEY, 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index == part_index or collection.name == f"part.{part_index}":
+            result = collection
+            break
+    else:
+        result = bpy.data.collections.new(f"part.{part_index} ({parent.name})")
+        parent.children.link(result)
+    result[PART_COLLECTION_KEY] = True
+    result[PART_INDEX_KEY] = int(part_index)
+    result.color_tag = _PART_COLORS[(part_index - 1) % len(_PART_COLORS)]
+    return result
+
+
+def _cleanup_empty_part_collections(root) -> None:
+    for collection in reversed(list(_walk_collections(root))):
+        if collection == root:
+            continue
+        if (
+            collection.get(PART_COLLECTION_KEY)
+            and not collection.objects
+            and not collection.children
+        ):
+            bpy.data.collections.remove(collection)
+
+
+def _selected_part_index(settings, config, master, *, append: bool) -> int:
+    if config.game != "ENDFIELD":
+        return 0
+    selected = str(settings.partition_part_target or "AUTO")
+    if selected != "AUTO":
+        try:
+            index = int(selected)
+        except ValueError as exc:
+            raise PartitionError("输出合集选择无效。") from exc
+        if index > 0:
+            return index
+    if not append:
+        existing = _object_part_index(master)
+        if existing > 0:
+            return existing
+    return _next_part_index(config.root)
+
+
 def _draw_ib_from_collection(collection):
     name = re.sub(r"\.\d{3}$", "", collection.name or "")
     match = _DRAW_IB_RE.match(name)
@@ -347,6 +433,88 @@ def _palettes_for_routes(config, routes):
     if missing:
         raise PartitionError("以下分区没有可用的 Merged palette：" + ", ".join(missing))
     return palettes
+
+
+def _resolve_component_merges(settings, routes, config):
+    if config.game != "ENDFIELD":
+        return {}
+    direct = {}
+    for index, item in enumerate(settings.partition_merge_items):
+        source = (
+            _component_id_from_object(item.source_object)
+            if item.source_object is not None
+            else None
+        )
+        target = (
+            _component_id_from_object(item.target_object)
+            if item.target_object is not None
+            else None
+        )
+        if source is None:
+            source = int(item.source_component)
+        if target is None:
+            target = int(item.target_component)
+        if source < 0 or target < 0:
+            raise PartitionError(f"分块归并第 {index + 1} 行没有选择完整的左右对象。")
+        if source == target:
+            raise PartitionError(f"分块归并第 {index + 1} 行左右对象属于同一个 C{source}。")
+        if source not in routes or target not in routes:
+            raise PartitionError(
+                f"分块归并第 {index + 1} 行的 C{source} → C{target} 不属于当前分区参考体。"
+            )
+        previous = direct.get(source)
+        if previous is not None and previous != target:
+            raise PartitionError(f"C{source} 同时归并到了 C{previous} 和 C{target}。")
+        direct[source] = target
+        item.source_component = source
+        item.target_component = target
+
+    resolved = {}
+    for source in direct:
+        target = direct[source]
+        path = {source}
+        while target in direct:
+            if target in path:
+                raise PartitionError("分块归并规则形成循环。")
+            path.add(target)
+            target = direct[target]
+        resolved[source] = target
+    return resolved
+
+
+def _apply_component_merges(projection, merge_map) -> int:
+    changed = 0
+    for face, label in enumerate(projection.labels):
+        target = merge_map.get(label)
+        if target is None or target == label:
+            continue
+        projection.labels[face] = target
+        projection.ambiguous[face] = True
+        changed += 1
+    return changed
+
+
+def _refresh_component_merge_objects(settings, partition_id, outputs) -> None:
+    def find_object(component_id):
+        output = outputs.get(component_id)
+        if output is not None:
+            return output
+        for obj in bpy.data.objects:
+            if (
+                str(obj.get(PARTITION_ID_KEY, "")) == partition_id
+                and obj.get(ROLE_KEY) == ROLE_SOURCE
+                and _component_id_from_object(obj) == component_id
+            ):
+                return obj
+        return None
+
+    for item in settings.partition_merge_items:
+        source = int(item.source_component)
+        target = int(item.target_component)
+        if source >= 0:
+            item.source_object = find_object(source)
+        if target >= 0:
+            item.target_object = find_object(target)
 
 
 def _remember_and_hide(obj) -> None:
@@ -533,6 +701,61 @@ def _apply_weights(output, source_weights) -> None:
             groups[group_id].add([vertex.index], float(weight), "REPLACE")
 
 
+def _validate_source_vertex_mapping(master, output) -> list[int]:
+    attribute = output.data.attributes.get(SOURCE_VERTEX_ATTRIBUTE)
+    if (
+        attribute is None
+        or attribute.domain != "POINT"
+        or attribute.data_type != "INT"
+        or len(attribute.data) != len(output.data.vertices)
+    ):
+        raise PartitionError(
+            f"输出 `{output.name}` 没有 Master 顶点映射，请先使用“重新生成”生成一次。"
+        )
+    source_indices = [int(item.value) for item in attribute.data]
+    for output_vertex, source_index in zip(output.data.vertices, source_indices):
+        if source_index < 0 or source_index >= len(master.data.vertices):
+            raise PartitionError(f"输出 `{output.name}` 的 Master 顶点映射越界。")
+        if (output_vertex.co - master.data.vertices[source_index].co).length > 1e-6:
+            raise PartitionError(
+                f"输出 `{output.name}` 的几何已改变，不能只更新权重；请重新生成。"
+            )
+    return source_indices
+
+
+def _update_existing_output_weights(config, settings, master):
+    partition_id = str(master.get(PARTITION_ID_KEY, "") or "")
+    if not partition_id:
+        raise PartitionError("完整 Master 还没有分区记录，请先重新生成。")
+    labels = _component_values(master.data)
+    if len(labels) != len(master.data.polygons):
+        raise PartitionError("完整 Master 缺少有效的面级分区记录，请先重新生成。")
+    routes = _load_routes(master, config)
+    palettes = _palettes_for_routes(config, routes)
+    outputs = [
+        obj
+        for obj in bpy.data.objects
+        if obj.get(ROLE_KEY) == ROLE_OUTPUT
+        and str(obj.get(PARTITION_ID_KEY, "")) == partition_id
+    ]
+    if not outputs:
+        raise PartitionError("没有找到该 Master 的 Component 输出，请先重新生成。")
+    source_indices = {
+        output: _validate_source_vertex_mapping(master, output)
+        for output in outputs
+    }
+    weights = prepare_component_weights(master, labels, palettes)
+    for output in outputs:
+        _apply_weights(output, weights.weights)
+        _validate_geometry_and_weights(
+            master,
+            output,
+            source_indices[output],
+            weights.weights,
+        )
+    return outputs, weights
+
+
 def _validate_geometry_and_weights(master, output, source_indices, source_weights) -> None:
     group_names = {group.index: group.name for group in output.vertex_groups}
     for output_vertex, source_index in zip(output.data.vertices, source_indices):
@@ -605,6 +828,27 @@ def _component_values(mesh) -> list[int]:
     return [int(item.value) for item in attribute.data]
 
 
+def _separate_selected_faces(context, working, selected_faces) -> None:
+    selected_faces = list(selected_faces)
+    if len(selected_faces) != len(working.data.polygons):
+        raise PartitionError("待拆分面选择数量与网格面数不一致。")
+    previous_select_mode = tuple(context.tool_settings.mesh_select_mode)
+    try:
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bpy.ops.object.mode_set(mode="OBJECT")
+        for polygon, selected in zip(working.data.polygons, selected_faces):
+            polygon.select = bool(selected)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.separate(type="SELECTED")
+        bpy.ops.object.mode_set(mode="OBJECT")
+    finally:
+        if context.object is not None and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        context.tool_settings.mesh_select_mode = previous_select_mode
+
+
 def _make_component_output(
     context,
     master,
@@ -652,14 +896,14 @@ def _make_component_output(
     try:
         _select_objects(context, [working], active=working)
         if expected_faces != len(working.data.polygons):
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.select_all(action="DESELECT")
-            bpy.ops.object.mode_set(mode="OBJECT")
-            for polygon in working.data.polygons:
-                polygon.select = projection.labels[polygon.index] == component_id
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.separate(type="SELECTED")
-            bpy.ops.object.mode_set(mode="OBJECT")
+            _separate_selected_faces(
+                context,
+                working,
+                (
+                    projection.labels[polygon.index] == component_id
+                    for polygon in working.data.polygons
+                ),
+            )
 
         candidates = [obj for obj in context.scene.objects if obj not in before]
         if working.name in bpy.data.objects and working not in candidates:
@@ -701,7 +945,6 @@ def _make_component_output(
         output[PARTITION_ID_KEY] = partition_id
         output[GENERATED_KEY] = True
         for attribute_name in (
-            SOURCE_VERTEX_ATTRIBUTE,
             SOURCE_FACE_ATTRIBUTE,
             SOURCE_LOOP_ATTRIBUTE,
         ):
@@ -725,7 +968,9 @@ def _commit_outputs(
     outputs,
     routes,
     partition_id,
+    part_index,
     projection,
+    replace_existing,
 ) -> None:
     old_outputs = [
         obj
@@ -735,8 +980,13 @@ def _commit_outputs(
     for component_id, output in outputs.items():
         route = routes[component_id]
         if config.game == "ENDFIELD":
-            destination = _component_collection(config.root, int(route["component_id"]))
+            part_parent = _component_collection(
+                config.root,
+                int(route["component_id"]),
+            )
+            destination = _part_collection(config.root, part_index, part_parent)
             output["velo_component_id"] = int(route["component_id"])
+            output[PART_INDEX_KEY] = int(part_index)
         else:
             destination = bpy.data.collections.get(str(route["target_collection"]))
             if destination is None or destination not in set(_walk_collections(config.root)):
@@ -756,12 +1006,17 @@ def _commit_outputs(
     master[ROLE_KEY] = ROLE_MASTER
     master[PARTITION_ID_KEY] = partition_id
     master[ROUTES_KEY] = _routes_json(routes)
+    if config.game == "ENDFIELD" and (replace_existing or not master.get(PART_INDEX_KEY)):
+        master[PART_INDEX_KEY] = int(part_index)
     if reference.get(ROLE_KEY) == ROLE_REFERENCE and reference.get(GENERATED_KEY):
         _remember_and_hide(reference)
 
-    for old_output in old_outputs:
-        if old_output not in outputs.values():
-            _remove_object(old_output)
+    if replace_existing:
+        for old_output in old_outputs:
+            if old_output not in outputs.values():
+                _remove_object(old_output)
+    if config.game == "ENDFIELD":
+        _cleanup_empty_part_collections(config.root)
     base_name = _strip_component_prefix(master.name)
     for component_id, output in outputs.items():
         route = routes[component_id]
@@ -771,6 +1026,12 @@ def _commit_outputs(
             prefix = str(route["display_name"])
         output.name = f"{prefix} {base_name} [Velo Split]"
         output.data.name = output.name
+    if config.game == "ENDFIELD" and reference.get(ROLE_KEY) == ROLE_REFERENCE:
+        _refresh_component_merge_objects(
+            context.scene.velo_tools,
+            partition_id,
+            outputs,
+        )
 
 
 def _partition_id_from_settings(settings):
@@ -797,6 +1058,54 @@ def _partition_id_for_target(reference, master) -> str:
         if not occupied:
             return reference_id
     return uuid.uuid4().hex
+
+
+class VELO_OT_partition_merge_add(bpy.types.Operator):
+    bl_idname = "velo.partition_merge_add"
+    bl_label = "添加分块归并"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.scene.velo_tools.partition_merge_items.add()
+        return {"FINISHED"}
+
+
+class VELO_OT_partition_merge_remove(bpy.types.Operator):
+    bl_idname = "velo.partition_merge_remove"
+    bl_label = "删除分块归并"
+    bl_options = {"REGISTER", "UNDO"}
+
+    mapping_index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        items = context.scene.velo_tools.partition_merge_items
+        if 0 <= self.mapping_index < len(items):
+            items.remove(self.mapping_index)
+        return {"FINISHED"}
+
+
+class VELO_OT_partition_new_part_add(bpy.types.Operator):
+    bl_idname = "velo.partition_new_part_add"
+    bl_label = "添加新部件"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.scene.velo_tools.partition_new_part_items.add()
+        return {"FINISHED"}
+
+
+class VELO_OT_partition_new_part_remove(bpy.types.Operator):
+    bl_idname = "velo.partition_new_part_remove"
+    bl_label = "删除新部件"
+    bl_options = {"REGISTER", "UNDO"}
+
+    item_index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        items = context.scene.velo_tools.partition_new_part_items
+        if 0 <= self.item_index < len(items):
+            items.remove(self.item_index)
+        return {"FINISHED"}
 
 
 class VELO_OT_partition_create_reference(bpy.types.Operator):
@@ -864,20 +1173,43 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
         staged = []
         try:
             config = _load_configuration(context.scene)
-            if reference is None or reference.type != "MESH":
-                raise PartitionError("请选择有效的分区参考体。")
             if master is None or master.type != "MESH":
                 raise PartitionError("请选择有效的完整 Master。")
+            if settings.partition_output_mode == "WEIGHTS":
+                outputs, weights = _update_existing_output_weights(config, settings, master)
+                warning = (
+                    f"；{len(weights.warning_vertices)} 个顶点丢弃 5%-10% 权重"
+                    if weights.warning_vertices
+                    else ""
+                )
+                _set_status(
+                    settings,
+                    f"仅更新权重完成：{len(outputs)} 个 Component 输出；"
+                    f"边界顶点 {weights.seam_vertices}{warning}",
+                )
+                _select_objects(context, outputs, active=outputs[0])
+                self.report({"INFO"}, "Component 权重已更新。")
+                return {"FINISHED"}
+            if reference is None or reference.type != "MESH":
+                raise PartitionError("请选择有效的分区参考体。")
             if master == reference:
                 raise PartitionError("分区参考体和完整 Master 不能是同一对象。")
             _validate_master_modifiers(master)
             partition_id = _partition_id_for_target(reference, master)
+            part_index = _selected_part_index(
+                settings,
+                config,
+                master,
+                append=settings.partition_output_mode == "APPEND",
+            )
             if not reference.get(PARTITION_ID_KEY):
                 reference[PARTITION_ID_KEY] = partition_id
 
             routes = _load_routes(reference, config)
             palettes = _palettes_for_routes(config, routes)
             projection = project_component_faces(reference, master)
+            merge_map = _resolve_component_merges(settings, routes, config)
+            merged_faces = _apply_component_merges(projection, merge_map)
             unknown_labels = sorted(set(projection.labels) - set(routes))
             if unknown_labels:
                 raise PartitionError(
@@ -915,7 +1247,9 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
                 outputs,
                 routes,
                 partition_id,
+                part_index,
                 projection,
+                settings.partition_output_mode == "REPLACE",
             )
             settings.partition_master_object = master
             counts = component_counts(projection.labels)
@@ -928,10 +1262,19 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
                 if weights.warning_vertices
                 else ""
             )
+            merge_summary = (
+                "；归递 "
+                + ", ".join(f"C{source}→C{target}" for source, target in sorted(merge_map.items()))
+                + f"（{merged_faces} 面）"
+                if merge_map
+                else ""
+            )
             _set_status(
                 settings,
-                f"拆分完成：{summary}；边界顶点 {weights.seam_vertices}；"
-                f"模糊面 {sum(projection.ambiguous)}{warning}",
+                f"{'重新生成' if settings.partition_output_mode == 'REPLACE' else '额外生成'}完成："
+                f"{'part.' + str(part_index) + '；' if config.game == 'ENDFIELD' else ''}"
+                f"{summary}；边界顶点 {weights.seam_vertices}；"
+                f"模糊面 {sum(projection.ambiguous)}{merge_summary}{warning}",
             )
             _select_objects(context, list(outputs.values()), active=next(iter(outputs.values())))
             self.report({"INFO"}, "Component 分割完成。")
@@ -950,6 +1293,91 @@ class VELO_OT_partition_project_split(bpy.types.Operator):
             _set_status(settings, f"分割失败：{exc}")
             self.report({"ERROR"}, f"分割失败：{exc}")
             return {"CANCELLED"}
+
+
+class VELO_OT_partition_apply_new_part(bpy.types.Operator):
+    bl_idname = "velo.partition_apply_new_part"
+    bl_label = "应用新部件"
+    bl_description = "使用当前完整 Master 的既有分区，只拆分吸管选择的新部件"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.velo_tools
+        body_master = settings.partition_master_object
+        if body_master is None or body_master.type != "MESH":
+            self.report({"ERROR"}, "请先设置并生成有效的完整 Master。")
+            return {"CANCELLED"}
+        if body_master.data.attributes.get(COMPONENT_ATTRIBUTE) is None:
+            self.report({"ERROR"}, "完整 Master 还没有分区记录，请先重新生成一次。")
+            return {"CANCELLED"}
+        new_parts = []
+        seen = set()
+        for item in settings.partition_new_part_items:
+            obj = item.object
+            if obj is None or obj.type != "MESH" or obj in seen:
+                continue
+            if obj == body_master:
+                self.report({"ERROR"}, "新增部件列表不能包含完整 Master。")
+                return {"CANCELLED"}
+            seen.add(obj)
+            new_parts.append(obj)
+        if not new_parts:
+            self.report({"ERROR"}, "请添加并选择至少一个有效的新部件。")
+            return {"CANCELLED"}
+
+        try:
+            config = _load_configuration(context.scene)
+        except PartitionError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        selected_part = str(settings.partition_part_target or "AUTO")
+        if selected_part != "AUTO":
+            batch_index = int(selected_part)
+        else:
+            existing_indices = {
+                _object_part_index(obj)
+                for obj in new_parts
+                if _object_part_index(obj) > 0
+            }
+            if len(existing_indices) > 1:
+                self.report({"ERROR"}, "新增部件属于不同 part，请分别应用或选择一个输出合集。")
+                return {"CANCELLED"}
+            batch_index = (
+                next(iter(existing_indices))
+                if existing_indices
+                else _next_part_index(config.root)
+            )
+        for obj in new_parts:
+            obj[PART_INDEX_KEY] = int(batch_index)
+
+        saved_reference = settings.partition_reference_object
+        saved_master = settings.partition_master_object
+        saved_mode = settings.partition_output_mode
+        settings.partition_reference_object = body_master
+        settings.partition_output_mode = "REPLACE"
+        applied = []
+        try:
+            for new_part in new_parts:
+                settings.partition_master_object = new_part
+                try:
+                    result = bpy.ops.velo.partition_project_split()
+                except RuntimeError:
+                    result = {"CANCELLED"}
+                if result != {"FINISHED"}:
+                    return result
+                applied.append(new_part.name)
+        finally:
+            settings.partition_reference_object = saved_reference
+            settings.partition_master_object = saved_master
+            settings.partition_output_mode = saved_mode
+
+        _set_status(
+            settings,
+            f"part.{batch_index} 已应用 {len(applied)} 个新部件："
+            + ", ".join(applied),
+        )
+        self.report({"INFO"}, f"{len(applied)} 个新部件已应用到 part.{batch_index}。")
+        return {"FINISHED"}
 
 
 class VELO_OT_partition_select_ambiguous(bpy.types.Operator):
@@ -1004,7 +1432,13 @@ class VELO_OT_partition_restore_sources(bpy.types.Operator):
             if role in {ROLE_SOURCE, ROLE_REFERENCE, ROLE_MASTER, ROLE_DIAGNOSTIC}:
                 if role in {ROLE_SOURCE, ROLE_REFERENCE, ROLE_DIAGNOSTIC}:
                     _restore_visibility(obj)
-                for key in (ROLE_KEY, PARTITION_ID_KEY, GENERATED_KEY, ROUTES_KEY):
+                for key in (
+                    ROLE_KEY,
+                    PARTITION_ID_KEY,
+                    GENERATED_KEY,
+                    ROUTES_KEY,
+                    PART_INDEX_KEY,
+                ):
                     if key in obj:
                         del obj[key]
 
@@ -1017,6 +1451,8 @@ class VELO_OT_partition_restore_sources(bpy.types.Operator):
                 _remove_attribute(master.data, attribute_name)
             if ROUTES_KEY in master:
                 del master[ROUTES_KEY]
+            if PART_INDEX_KEY in master:
+                del master[PART_INDEX_KEY]
         settings.partition_master_object = None
         _set_status(settings, "已恢复原始 Component，并移除分区生成结果。")
         self.report({"INFO"}, "原始 Component 已恢复。")
@@ -1024,8 +1460,13 @@ class VELO_OT_partition_restore_sources(bpy.types.Operator):
 
 
 _CLASSES = (
+    VELO_OT_partition_merge_add,
+    VELO_OT_partition_merge_remove,
+    VELO_OT_partition_new_part_add,
+    VELO_OT_partition_new_part_remove,
     VELO_OT_partition_create_reference,
     VELO_OT_partition_project_split,
+    VELO_OT_partition_apply_new_part,
     VELO_OT_partition_select_ambiguous,
     VELO_OT_partition_restore_sources,
 )

@@ -196,7 +196,11 @@ class ObjectMerger:
             }:
                 continue
 
-            if self.ignore_hidden_objects and object_is_hidden(obj):
+            if (
+                self.ignore_hidden_objects
+                and str(obj.get('velo_partition_role', '')).lower() != 'output'
+                and object_is_hidden(obj)
+            ):
                 continue
 
             if obj.name.startswith('TEMP_'):

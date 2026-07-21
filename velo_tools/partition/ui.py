@@ -1,8 +1,10 @@
-"""N-panel UI for Merged Component partitioning."""
+"""N-panel UI for the EFMI Merged whole-mesh workflow."""
 
 import textwrap
 
 import bpy
+
+from .constants import EXPORT_ZONE_KEY
 
 
 def _is_partition_tab(context):
@@ -11,7 +13,7 @@ def _is_partition_tab(context):
 
 
 class VELO_PT_partition(bpy.types.Panel):
-    bl_label = "Merged Component 分割"
+    bl_label = "EFMI 整体区 / 分割区"
     bl_idname = "VELO_PT_partition"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -26,49 +28,101 @@ class VELO_PT_partition(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.velo_tools
-        layout.prop(settings, "active_game", text="游戏")
-
-        game = settings.active_game
-        if game == "ENDFIELD":
-            cfg = getattr(context.scene, "VTEF_settings", None)
-        elif game == "ZENLESS":
-            cfg = getattr(context.scene, "VTZZ_properties_generate_mod", None)
-        else:
-            layout.label(text="当前仅支持 EFMI / ZZZ Merged", icon="ERROR")
+        cfg = getattr(context.scene, "VTEF_settings", None)
+        if cfg is None:
+            layout.label(text="未启用 Endfield EFMI 工作流", icon="ERROR")
             return
 
-        column = layout.column(align=True)
-        if game == "ENDFIELD" and cfg is not None:
-            column.prop(cfg, "component_collection", text="组件集合")
-            column.prop(cfg, "object_source_folder", text="对象源目录")
-            column.prop(cfg, "mod_skeleton_type", text="骨架模式")
-        elif game == "ZENLESS" and cfg is not None:
-            from ..games.zenless_zone_zero._zzmi_core.config.main_config import GlobalConfig
+        setup = layout.box()
+        setup.label(text="基础设置", icon="OUTLINER_COLLECTION")
+        row = setup.row()
+        row.label(text="游戏")
+        row.label(text="终末地（测试版本）")
+        row = setup.row()
+        row.label(text="骨架模式")
+        row.label(text="Merged（固定）", icon="LOCKED")
+        is_merged = getattr(cfg, "mod_skeleton_type", None) == "MERGED"
+        if not is_merged:
+            setup.label(text="请先在游戏页把骨架模式设为 MERGED", icon="ERROR")
 
-            GlobalConfig.read_from_main_json()
-            column.label(
-                text=f"DBMT workspace: {GlobalConfig.workspacename or '未选择'}",
-                icon="FILE_FOLDER",
-            )
-            column.prop(cfg, "component_collection", text="导出部件集合")
-            column.prop(cfg, "skeleton_mode", text="骨架模式")
-        column.prop(settings, "partition_legacy_object", text="旧手工合并体")
-        column.operator("velo.partition_create_reference", icon="AUTOMERGE_ON")
+        authoring = settings.partition_authoring_collection
+        if authoring is None and cfg.component_collection is not None:
+            if not cfg.component_collection.get(EXPORT_ZONE_KEY):
+                authoring = cfg.component_collection
+        root_row = setup.row()
+        root_row.enabled = False
+        root_row.prop(settings, "partition_authoring_collection", text="原始整体区")
+        if settings.partition_authoring_collection is None and authoring is not None:
+            root_row.label(text=authoring.name)
+        setup.prop(cfg, "object_source_folder", text="对象源目录")
+        setup.prop(settings, "partition_legacy_object", text="原部件手工合并体")
 
-        layout.separator()
-        column = layout.column(align=True)
-        column.prop(settings, "partition_reference_object", text="分区参考体")
-        column.prop(settings, "partition_master_object", text="完整 Master")
-        column.operator("velo.partition_project_split", icon="MOD_EXPLODE")
+        whole = layout.box()
+        whole.enabled = is_merged
+        whole.label(text="整体模型", icon="MOD_DATA_TRANSFER")
+        active = context.active_object
+        whole.label(
+            text=f"活动 Mesh：{active.name if active is not None and active.type == 'MESH' else '未选择'}"
+        )
+        whole.prop(settings, "partition_register_component", text="归属 C", slider=True)
+        buttons = whole.row(align=True)
+        standard_label = "设为基准身体" if settings.partition_master_object else "创建基准身体"
+        buttons.operator("velo.partition_create_standard_body", text=standard_label, icon="ARMATURE_DATA")
+        buttons.operator("velo.partition_add_whole_meshes", text="加入整体模型", icon="ADD")
 
-        row = layout.row(align=True)
-        row.operator("velo.partition_select_ambiguous", icon="RESTRICT_SELECT_OFF")
-        row.operator("velo.partition_restore_sources", icon="LOOP_BACK")
+        for item in settings.partition_whole_mesh_items:
+            row = whole.row(align=True)
+            icon = "SOLO_ON" if item.object is settings.partition_master_object else "MESH_DATA"
+            name = item.object.name if item.object is not None else "已删除"
+            row.label(text=name, icon=icon)
+            row.prop(item, "home_component", text="C", slider=True)
+
+        rules = layout.box()
+        rules.enabled = is_merged and settings.partition_master_object is not None
+        header = rules.row(align=True)
+        header.label(text="分块归并")
+        header.operator("velo.partition_merge_add", text="添加", icon="ADD")
+        for index, mapping in enumerate(settings.partition_merge_items):
+            row = rules.row(align=True)
+            row.prop(mapping, "source_object", text="")
+            row.label(text="", icon="FORWARD")
+            row.prop(mapping, "target_object", text="")
+            remove = row.operator("velo.partition_merge_remove", text="", icon="X")
+            remove.mapping_index = index
+
+        passthrough = layout.box()
+        passthrough.enabled = is_merged and settings.partition_master_object is not None
+        header = passthrough.row(align=True)
+        header.label(text="原样同步到 Component")
+        header.operator("velo.partition_passthrough_add", text="添加", icon="ADD")
+        for index, item in enumerate(settings.partition_passthrough_items):
+            row = passthrough.row(align=True)
+            row.prop(item, "source_kind", text="")
+            if item.source_kind == "COLLECTION":
+                row.prop(item, "source_collection", text="")
+            else:
+                row.prop(item, "source_object", text="")
+            row.label(text="", icon="FORWARD")
+            row.prop(item, "target_component", text="C", slider=True)
+            remove = row.operator("velo.partition_passthrough_remove", text="", icon="X")
+            remove.item_index = index
+
+        actions = layout.column(align=True)
+        actions.enabled = is_merged and settings.partition_master_object is not None
+        preview = actions.row(align=True)
+        preview.prop(settings, "partition_preview_mode", expand=True)
+        actions.operator("velo.partition_sync_zones", text="同步到分割区", icon="FILE_REFRESH")
+        actions.operator(
+            "velo.partition_select_ambiguous",
+            text="选择模糊面",
+            icon="RESTRICT_SELECT_OFF",
+        )
 
         if settings.partition_status:
             box = layout.box()
             for index, line in enumerate(textwrap.wrap(settings.partition_status, width=34)):
-                box.label(text=line, icon="INFO" if index == 0 else "BLANK1")
+                icon = "CHECKMARK" if "可以导出" in settings.partition_status else "INFO"
+                box.label(text=line, icon=icon if index == 0 else "BLANK1")
 
 
 _CLASSES = (VELO_PT_partition,)

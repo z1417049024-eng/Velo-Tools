@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -63,8 +63,8 @@ def _build_component_trees(reference) -> dict[int, BVHTree]:
         for component_id, triangles in triangles_by_component.items()
         if triangles
     }
-    if len(trees) < 2:
-        raise PartitionError("分区参考体必须至少包含两个有效 Component。")
+    if not trees:
+        raise PartitionError("分区参考体没有有效 Component。")
     return trees
 
 
@@ -98,6 +98,150 @@ def _face_adjacency(mesh) -> list[set[int]]:
     return adjacency
 
 
+def _label_regions(labels: list[int], adjacency: list[set[int]]):
+    seen = set()
+    for start, label in enumerate(labels):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        region = []
+        while stack:
+            face = stack.pop()
+            region.append(face)
+            for neighbor in adjacency[face]:
+                if neighbor not in seen and labels[neighbor] == label:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        yield label, region
+
+
+def _remove_small_label_islands(
+    labels: list[int],
+    adjacency: list[set[int]],
+    *,
+    maximum_faces: int,
+    minimum_dominance: float = 0.75,
+) -> set[int]:
+    changed = set()
+    for _iteration in range(4):
+        regions = list(_label_regions(labels, adjacency))
+        largest = defaultdict(int)
+        for label, region in regions:
+            largest[label] = max(largest[label], len(region))
+
+        updates = []
+        for label, region in regions:
+            if len(region) > maximum_faces or len(region) == largest[label]:
+                continue
+            boundary = Counter()
+            for face in region:
+                for neighbor in adjacency[face]:
+                    neighbor_label = labels[neighbor]
+                    if neighbor_label != label:
+                        boundary[neighbor_label] += 1
+            if not boundary:
+                continue
+            highest = max(boundary.values())
+            winners = [item for item, count in boundary.items() if count == highest]
+            if len(winners) != 1 or highest / sum(boundary.values()) < minimum_dominance:
+                continue
+            updates.append((label, region, winners[0]))
+
+        if not updates:
+            break
+        pass_changed = 0
+        for old_label, region, new_label in updates:
+            for face in region:
+                if labels[face] != old_label:
+                    continue
+                labels[face] = new_label
+                changed.add(face)
+                pass_changed += 1
+        if not pass_changed:
+            break
+    return changed
+
+
+def _smooth_one_face_spikes(
+    labels: list[int],
+    confidence: list[float],
+    ambiguous: list[bool],
+    adjacency: list[set[int]],
+    *,
+    protected_labels: set[int],
+) -> set[int]:
+    changed = set()
+    for _iteration in range(2):
+        pass_changed = 0
+        for face, neighbors in enumerate(adjacency):
+            current = labels[face]
+            if current in protected_labels or len(neighbors) < 3:
+                continue
+            if confidence[face] > 0.55 and not ambiguous[face]:
+                continue
+
+            votes = Counter(labels[neighbor] for neighbor in neighbors)
+            highest = max(votes.values(), default=0)
+            winners = [label for label, count in votes.items() if count == highest]
+            if len(winners) != 1:
+                continue
+            winner = winners[0]
+            own_votes = votes.get(current, 0)
+            if winner == current or highest < 3 or highest - own_votes < 2:
+                continue
+
+            labels[face] = winner
+            changed.add(face)
+            pass_changed += 1
+        if not pass_changed:
+            break
+    return changed
+
+
+def _cleanup_partition_labels(
+    labels: list[int],
+    confidence: list[float],
+    ambiguous: list[bool],
+    adjacency: list[set[int]],
+    *,
+    maximum_island_faces: int = 32,
+) -> set[int]:
+    """Remove enclosed label islands and short boundary spikes in-place."""
+    if not (len(labels) == len(confidence) == len(ambiguous) == len(adjacency)):
+        raise PartitionError("分区清理输入长度不一致。")
+
+    changed = _remove_small_label_islands(
+        labels,
+        adjacency,
+        maximum_faces=maximum_island_faces,
+    )
+    protected_labels = {
+        label
+        for label, count in Counter(labels).items()
+        if count <= maximum_island_faces
+    }
+    changed.update(
+        _smooth_one_face_spikes(
+            labels,
+            confidence,
+            ambiguous,
+            adjacency,
+            protected_labels=protected_labels,
+        )
+    )
+    changed.update(
+        _remove_small_label_islands(
+            labels,
+            adjacency,
+            maximum_faces=maximum_island_faces,
+        )
+    )
+    for face in changed:
+        ambiguous[face] = True
+    return changed
+
+
 def project_component_faces(reference, target) -> ProjectionResult:
     """Project discrete Component identity onto target polygons in world space."""
     trees = _build_component_trees(reference)
@@ -127,7 +271,7 @@ def project_component_faces(reference, target) -> ProjectionResult:
             reverse=True,
         )
         winner, winner_score = ordered[0]
-        runner_score = ordered[1][1]
+        runner_score = ordered[1][1] if len(ordered) > 1 else 0
         vote_total = max(1, sum(scores.values()))
         vote_confidence = max(0.0, min(1.0, (winner_score - runner_score) / vote_total))
         if second_distance <= 1e-12:
@@ -158,6 +302,10 @@ def project_component_faces(reference, target) -> ProjectionResult:
         for face_id, new_label in updates.items():
             labels[face_id] = new_label
         smoothed += len(updates)
+
+    smoothed += len(
+        _cleanup_partition_labels(labels, confidence, ambiguous, adjacency)
+    )
 
     return ProjectionResult(
         labels=labels,

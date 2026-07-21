@@ -76,7 +76,8 @@ def _object_allowed_by_export_filters(obj, cfg=None, context=None):
         return False
     if cfg is None:
         return True
-    if bool(getattr(cfg, "ignore_hidden_objects", False)):
+    managed_output = str(obj.get("velo_partition_role", "")).lower() == "output"
+    if bool(getattr(cfg, "ignore_hidden_objects", False)) and not managed_output:
         hide_get = getattr(obj, "hide_get", None)
         if bool(hide_get and hide_get()):
             return False
@@ -90,25 +91,34 @@ def _object_allowed_by_export_filters(obj, cfg=None, context=None):
     return True
 
 
+def _partition_output_aliases(obj, cfg=None):
+    try:
+        from velo_tools.partition.sync import output_names_for_source
+
+        return output_names_for_source(obj, cfg)
+    except Exception:
+        return []
+
+
 def _iter_mapping_meshes(mapping, cfg=None, context=None):
     if mapping.source_kind == 'COLLECTION':
         collection = mapping.source_collection
         if collection is None:
             return
         for obj in collection.objects:
-            if _object_allowed_by_export_filters(obj, cfg, context):
+            if _partition_output_aliases(obj, cfg) or _object_allowed_by_export_filters(obj, cfg, context):
                 yield obj
         for child in collection.children:
             stack = [child]
             while stack:
                 current = stack.pop()
                 for obj in current.objects:
-                    if _object_allowed_by_export_filters(obj, cfg, context):
+                    if _partition_output_aliases(obj, cfg) or _object_allowed_by_export_filters(obj, cfg, context):
                         yield obj
                 stack.extend(current.children)
         return
     obj = mapping.source_object
-    if _object_allowed_by_export_filters(obj, cfg, context):
+    if _partition_output_aliases(obj, cfg) or _object_allowed_by_export_filters(obj, cfg, context):
         yield obj
 
 
@@ -123,6 +133,11 @@ def _source_name_aliases(mapping, cfg=None, context=None):
             aliases.append(clean)
 
     for obj in _iter_mapping_meshes(mapping, cfg, context) or ():
+        partition_aliases = _partition_output_aliases(obj, cfg)
+        if partition_aliases:
+            for name in partition_aliases:
+                add(name)
+            continue
         add(obj.name)
         object_comp_id = parse_component_id(obj.name)
         for slot in getattr(obj, "material_slots", ()):
