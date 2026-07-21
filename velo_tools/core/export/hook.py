@@ -116,7 +116,12 @@ def _iter_export_meshes(context, cfg):
             continue
         if obj.name.startswith('TEMP_'):
             continue
-        if ignore_hidden_objects and bool(getattr(obj, "hide_get", None) and obj.hide_get()):
+        managed_output = str(obj.get("velo_partition_role", "")).lower() == "output"
+        if (
+            ignore_hidden_objects
+            and not managed_output
+            and bool(getattr(obj, "hide_get", None) and obj.hide_get())
+        ):
             continue
         scoped_collections = [
             collection
@@ -323,6 +328,23 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
     def patched(self, context):
         state = None
         mesh_state = None
+        if adapter_key == "EFMI":
+            try:
+                from ...partition.sync import validate_export_state
+
+                sync_error = validate_export_state(context.scene)
+            except Exception as exc:
+                sync_error = f"无法校验整体区/分割区同步状态：{exc}"
+            if sync_error:
+                print(f"[velo.export-hook] {sync_error}")
+                settings = getattr(context.scene, "velo_tools", None)
+                if settings is not None:
+                    settings.partition_status = sync_error
+                try:
+                    self.report({'ERROR'}, sync_error)
+                except Exception:
+                    pass
+                return {'CANCELLED'}
         # The VertexGroupMap.json merged-export precondition is EFMI-specific: EFMI's Merged mode
         # back-translates unified VGs to per-component ids via VertexGroupMap.json. WWMI's native
         # Merged export reads vg_map straight from Metadata.json and needs no VertexGroupMap.json,

@@ -370,10 +370,20 @@ class IniToggles(bpy.types.PropertyGroup):
                     try:
                         if not obj.object:
                             raise ValueError(f'Object {obj_id} is not set')
-                        if obj.object.name in conditions.keys():
-                            conditions[obj.object.name] += f' || ({obj.format_conditions()})'
-                        else:
-                            conditions[obj.object.name] = f'({obj.format_conditions()})'
+                        try:
+                            from velo_tools.partition.sync import output_names_for_source
+
+                            object_names = output_names_for_source(obj.object)
+                        except Exception:
+                            object_names = []
+                        if not object_names:
+                            object_names = [obj.object.name]
+                        formatted = obj.format_conditions()
+                        for object_name in object_names:
+                            if object_name in conditions:
+                                conditions[object_name] += f' || ({formatted})'
+                            else:
+                                conditions[object_name] = f'({formatted})'
                     except Exception as e:
                         raise ValueError(f'Ini Toggles error in State `{state.name}` of Var `{var.name}`:\n{e}') from e
         return conditions

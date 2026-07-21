@@ -20,6 +20,7 @@ _suspend_updates = False
 _suspend_history = False
 _suspend_base_reload = False
 _SUFFIX_RE = re.compile(r"\.\d{3}$")
+_PARTITION_COMPONENT_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
 
 
 # ============================================================
@@ -932,6 +933,116 @@ class VELO_SourceBaselineItem(bpy.types.PropertyGroup):
     baseline_name: StringProperty()
 
 
+def _partition_component_id(obj):
+    if obj is None:
+        return None
+    raw = obj.get("velo_component_id") if hasattr(obj, "get") else None
+    try:
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        pass
+    for collection in getattr(obj, "users_collection", ()):
+        raw = collection.get("velo_component_id") if hasattr(collection, "get") else None
+        try:
+            if raw is not None:
+                return int(raw)
+        except (TypeError, ValueError):
+            pass
+    match = _PARTITION_COMPONENT_RE.search(getattr(obj, "name", ""))
+    return int(match.group(1)) if match else None
+
+
+def _on_partition_merge_source_update(self, _context):
+    component_id = _partition_component_id(self.source_object)
+    if component_id is not None:
+        self.source_component = component_id
+
+
+def _on_partition_merge_target_update(self, _context):
+    component_id = _partition_component_id(self.target_object)
+    if component_id is not None:
+        self.target_component = component_id
+
+
+def _partition_merge_object_poll(_self, obj):
+    return obj.type == "MESH" and obj.get("velo_partition_role") in {"output", "source"}
+
+
+def _on_partition_whole_home_update(self, context):
+    if self.object is None:
+        return
+    try:
+        from .partition.sync import move_whole_mesh_to_home
+
+        move_whole_mesh_to_home(context.scene, self.object, int(self.home_component))
+    except Exception:
+        pass
+
+
+class VELO_PartitionWholeMeshItem(bpy.types.PropertyGroup):
+    object: PointerProperty(
+        name="整体模型",
+        type=bpy.types.Object,
+        poll=lambda _self, obj: obj.type == "MESH",
+    )
+    source_id: StringProperty(default="", options={'HIDDEN'})
+    home_component: IntProperty(
+        name="归属 Component",
+        description="整体模型在原始整体区中存放的 Cx；不改变最终分割路由",
+        default=0,
+        min=0,
+        max=15,
+        update=_on_partition_whole_home_update,
+    )
+
+
+class VELO_PartitionMergeItem(bpy.types.PropertyGroup):
+    source_object: PointerProperty(
+        name="归并来源",
+        description="左侧基准身体片段所属 Component 将并入右侧 Component",
+        type=bpy.types.Object,
+        poll=_partition_merge_object_poll,
+        update=_on_partition_merge_source_update,
+    )
+    target_object: PointerProperty(
+        name="归并目标",
+        description="接收左侧分块的基准身体片段",
+        type=bpy.types.Object,
+        poll=_partition_merge_object_poll,
+        update=_on_partition_merge_target_update,
+    )
+    source_component: IntProperty(default=-1, options={'HIDDEN'})
+    target_component: IntProperty(default=-1, options={'HIDDEN'})
+
+
+class VELO_PartitionPassthroughItem(bpy.types.PropertyGroup):
+    source_kind: EnumProperty(
+        name="来源类型",
+        items=[
+            ('OBJECT', "对象", "原样同步一个 Mesh 对象"),
+            ('COLLECTION', "集合", "递归原样同步集合中的全部 Mesh"),
+        ],
+        default='OBJECT',
+    )
+    source_object: PointerProperty(
+        name="来源对象",
+        type=bpy.types.Object,
+        poll=lambda _self, obj: obj.type == "MESH",
+    )
+    source_collection: PointerProperty(name="来源集合", type=bpy.types.Collection)
+    target_component: IntProperty(name="目标 Component", default=0, min=0, max=15)
+
+
+def _on_partition_preview_mode_update(self, context):
+    try:
+        from .partition.sync import apply_preview_mode
+
+        apply_preview_mode(context.scene)
+    except Exception:
+        pass
+
+
 def _on_active_general_text_update(self, context):
     """When the mapping-table Text is switched: load that Text's content into mappings."""
     if _suspend_updates:
@@ -1125,6 +1236,46 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         description="可选；旧的手工 Join 网格会被隐藏并排除导出",
         type=bpy.types.Object,
     )
+    partition_authoring_collection: PointerProperty(
+        name="原始整体区",
+        description="原始导入的 EFMI Component 树；用户直接在这里编辑",
+        type=bpy.types.Collection,
+    )
+    partition_export_collection: PointerProperty(
+        name="工作分割区",
+        description="插件生成并交给 EFMI 导出的只读分割镜像",
+        type=bpy.types.Collection,
+    )
+    partition_previous_export_collection: PointerProperty(
+        name="旧导出集合",
+        description="初始化前使用的 EFMI 组件集合",
+        type=bpy.types.Collection,
+        options={'HIDDEN'},
+    )
+    partition_register_component: IntProperty(
+        name="归属 Component",
+        description="把新登记的整体模型放入原始整体区的 Cx",
+        default=0,
+        min=0,
+        max=15,
+    )
+    partition_whole_mesh_items: CollectionProperty(type=VELO_PartitionWholeMeshItem)
+    partition_whole_mesh_index: IntProperty(default=0)
+    partition_registry_migrated: BoolProperty(default=False, options={'HIDDEN'})
+    partition_imported_captured: BoolProperty(default=False, options={'HIDDEN'})
+    partition_merge_items: CollectionProperty(type=VELO_PartitionMergeItem)
+    partition_passthrough_items: CollectionProperty(type=VELO_PartitionPassthroughItem)
+    partition_sync_manifest: StringProperty(default="", options={'HIDDEN'})
+    partition_output_manifest: StringProperty(default="", options={'HIDDEN'})
+    partition_preview_mode: EnumProperty(
+        name="预览区域",
+        items=[
+            ('AUTHORING', "整体区", "显示整体区并隐藏分割区"),
+            ('EXPORT', "分割区", "隐藏整体区并显示分割区"),
+        ],
+        default='AUTHORING',
+        update=_on_partition_preview_mode_update,
+    )
     partition_status: StringProperty(
         name="分割状态",
         default="",
@@ -1138,7 +1289,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
             ('MATCH', "顶点组工具", "顶点组名称匹配 / MMD 映射 / 顶点组操作"),
             ('MESH', "网格工具", "材质 / 拆分合并 / 形态键聚合 / 多物体雕刻"),
             ('WEIGHT', "权重工具", "权重传递 / 平滑 / 限制组数量"),
-            ('PARTITION', "分割操作", "EFMI Merged Component 自动分割"),
+            ('PARTITION', "分割操作", "EFMI Merged 整体区到分割区同步"),
             ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI)"),
         ],
         default='MATCH',
@@ -1165,6 +1316,9 @@ _classes = (
     VELO_UnmatchedItem,
     VELO_RenameHistoryItem,
     VELO_SourceBaselineItem,
+    VELO_PartitionWholeMeshItem,
+    VELO_PartitionMergeItem,
+    VELO_PartitionPassthroughItem,
     VELO_ToolsSettings,
 )
 

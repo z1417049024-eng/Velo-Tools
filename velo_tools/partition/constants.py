@@ -1,16 +1,26 @@
-"""Shared identifiers for EFMI Component partition authoring."""
+"""Shared identifiers for Merged Component partition authoring."""
 
 ROLE_KEY = "velo_partition_role"
 PARTITION_ID_KEY = "velo_partition_id"
 GENERATED_KEY = "velo_partition_generated"
 SOURCE_NAMES_KEY = "velo_partition_source_names"
 SOURCE_COMPONENTS_KEY = "velo_partition_source_components"
+ROUTES_KEY = "velo_partition_routes"
+PART_INDEX_KEY = "velo_partition_part_index"
+PART_COLLECTION_KEY = "velo_partition_part_collection"
+SOURCE_ID_KEY = "velo_partition_source_id"
+EXPORT_ZONE_KEY = "velo_partition_export_zone"
+SYNC_MANIFEST_KEY = "velo_partition_sync_manifest"
+OUTPUT_MANIFEST_KEY = "velo_partition_output_manifest"
+SYNC_VERSION_KEY = "velo_partition_sync_version"
+PREVIEW_HIDE_KEY = "velo_partition_preview_hidden"
 
 ROLE_SOURCE = "source"
 ROLE_REFERENCE = "reference"
 ROLE_MASTER = "master"
 ROLE_OUTPUT = "output"
 ROLE_DIAGNOSTIC = "diagnostic"
+ROLE_IMPORTED = "imported"
 
 EXPORT_EXCLUDED_ROLES = frozenset(
     {ROLE_SOURCE, ROLE_REFERENCE, ROLE_MASTER, ROLE_DIAGNOSTIC}
@@ -29,3 +39,4 @@ PREVIOUS_HIDE_RENDER_KEY = "velo_partition_prev_hide_render"
 PREVIOUS_HIDE_GET_KEY = "velo_partition_prev_hide_get"
 
 WORK_COLLECTION_NAME = "Velo Partition"
+SYNC_FORMAT_VERSION = 2
