@@ -12,6 +12,7 @@ Produces three pieces consumed by the export-time string post-processor:
 """
 import re
 from .props import parse_component_id
+from ..._efmi_core.blender_export.text_formatter import TextFormatter
 from .pass_registry import (
     EFFECT_CB2,
     EFFECT_CB3,
@@ -158,6 +159,21 @@ def _name_matches_wanted(wanted, name):
     if wanted is None:
         return True
     return name in wanted or _sanitize_source_name(name) in wanted
+
+
+def _append_provider_draw(lines, obj, cfg):
+    lines.append(f"    ; Draw provider {obj.name}")
+    draw = (
+        f"drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
+        f"{obj.index_offset}, 0, FIRST_INSTANCE"
+    )
+    if cfg is not None and bool(getattr(cfg, "use_ini_toggles", False)):
+        draw_var = TextFormatter().format_ini_drawvar(obj.name)
+        lines.append(f"    if {draw_var}")
+        lines.append(f"        {draw}")
+        lines.append("    endif")
+        return
+    lines.append(f"    {draw}")
 
 
 def _component_lod_levels(component):
@@ -706,11 +722,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                 for obj in objs:
                     if not _name_matches_wanted(wanted, obj.name):
                         continue  # User did not select this sub-mesh for borrowing.
-                    b.append(f"    ; Draw provider {obj.name}")
-                    b.append(
-                        f"    drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
-                        f"{obj.index_offset}, 0, FIRST_INSTANCE"
-                    )
+                    _append_provider_draw(b, obj, cfg)
                     emitted += 1
                 if emitted == 0:
                     b.append(

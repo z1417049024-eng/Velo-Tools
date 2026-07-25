@@ -336,6 +336,25 @@ def move_whole_mesh_to_home(scene, obj, component_id: int):
     settings.partition_status = "整体区已修改，需要重新同步。"
 
 
+def _move_passthrough_to_component(authoring, obj, component_id: int):
+    destination = _component_collection(authoring, component_id)
+    authoring_collections = set(_walk_collections(authoring))
+    if obj.name not in destination.objects:
+        destination.objects.link(obj)
+    for collection in list(obj.users_collection):
+        if collection != destination and collection in authoring_collections:
+            collection.objects.unlink(obj)
+    obj["velo_component_id"] = component_id
+    _rename_component_prefix(obj, component_id)
+
+
+def _normalize_passthrough_object_homes(settings, authoring):
+    for item in settings.partition_passthrough_items:
+        obj = item.source_object if item.source_kind == 'OBJECT' else None
+        if obj is not None and obj.type == "MESH":
+            _move_passthrough_to_component(authoring, obj, int(item.target_component))
+
+
 def _register_whole_mesh(settings, root, obj, component_id: int):
     if obj is None or obj.type != "MESH":
         raise PartitionError("请选择有效的 Mesh 作为整体模型。")
@@ -539,16 +558,69 @@ def _capture_imported_objects(settings, authoring):
     settings.partition_imported_captured = True
 
 
-def _reference_sources(authoring, reference):
-    names = {_normalized_source_name(name) for name in _reference_source_names(reference)}
-    if names:
-        return [
+def _discover_copied_whole_meshes(settings, authoring):
+    registered_rows = _whole_mesh_rows(settings)
+    registered = {obj for _item, obj in registered_rows}
+    origins = {
+        str(obj.get(SOURCE_ID_KEY, "") or ""): obj
+        for _item, obj in registered_rows
+        if obj.get(SOURCE_ID_KEY)
+    }
+    explicit = set(_passthrough_sources(settings))
+    candidates = sorted(
+        (
             obj
             for obj in authoring.all_objects
             if obj.type == "MESH"
-            and obj.get(ROLE_KEY) != ROLE_REFERENCE
-            and _normalized_source_name(obj.name) in names
+            and obj not in registered
+            and obj not in explicit
+            and obj.get(ROLE_KEY) == ROLE_MASTER
+        ),
+        key=lambda obj: (obj.name.casefold(), obj.name),
+    )
+    for obj in candidates:
+        component_id = legacy._component_id_from_object(obj)
+        if component_id is None or not 0 <= int(component_id) <= 15:
+            raise PartitionError(f"复制的整体模型 `{obj.name}` 无法确定所属 Cx。")
+        inherited_id = str(obj.get(SOURCE_ID_KEY, "") or "")
+        origin = origins.get(inherited_id)
+        if origin is not None:
+            group_id = str(origin.get(WHOLE_SPLIT_GROUP_KEY, "") or "") or uuid.uuid4().hex
+            group_name = str(origin.get(WHOLE_SPLIT_NAME_KEY, "") or "") or _split_group_name(origin)
+            for member in (origin, obj):
+                member[WHOLE_SPLIT_GROUP_KEY] = group_id
+                member[WHOLE_SPLIT_NAME_KEY] = group_name
+        _register_whole_mesh(settings, authoring, obj, int(component_id))
+    return len(candidates)
+
+
+def _reference_sources(authoring, reference):
+    recorded_names = _reference_source_names(reference)
+    if recorded_names:
+        candidates = [
+            obj
+            for obj in authoring.all_objects
+            if obj.type == "MESH" and obj.get(ROLE_KEY) != ROLE_REFERENCE
         ]
+        result = []
+        for recorded_name in recorded_names:
+            exact = [obj for obj in candidates if obj.name == recorded_name and obj not in result]
+            if len(exact) == 1:
+                result.append(exact[0])
+                continue
+            normalized = _normalized_source_name(recorded_name)
+            compatible = [
+                obj
+                for obj in candidates
+                if obj not in result and _normalized_source_name(obj.name) == normalized
+            ]
+            if len(compatible) != 1:
+                raise PartitionError(
+                    f"分区参考源 `{recorded_name}` 匹配到 {len(compatible)} 个对象，"
+                    "请保留原始对象名称后重新同步。"
+                )
+            result.append(compatible[0])
+        return result
     return [
         obj
         for obj in authoring.all_objects
@@ -561,6 +633,8 @@ def _prepare_workflow(context, *, rebuild_reference=False):
     _source_path(cfg)
     authoring = _authoring_root(settings, cfg)
     _migrate_legacy_registry(settings, authoring)
+    if settings.partition_auto_link_separated:
+        _discover_copied_whole_meshes(settings, authoring)
     body = settings.partition_master_object
     if body is None or body.type != "MESH":
         raise PartitionError("请先选择身体并点击“创建基准身体”。")
@@ -588,16 +662,29 @@ def _prepare_workflow(context, *, rebuild_reference=False):
     sources = _reference_sources(authoring, reference)
     if len(sources) < 2:
         raise PartitionError("分区参考体无法找到原始 Component 来源，请重新创建基准身体。")
+    explicit_passthrough = set(_passthrough_sources(settings))
     for obj in authoring.all_objects:
         if obj.type == "MESH" and obj.get(ROLE_KEY) == ROLE_SOURCE and obj not in sources:
             obj[ROLE_KEY] = ROLE_IMPORTED
+            component_id = legacy._component_id_from_object(obj)
+            if component_id is not None and 0 <= int(component_id) <= 15:
+                obj["velo_component_id"] = int(component_id)
+            _ensure_source_id(obj)
             legacy._restore_visibility(obj)
     for source in sources:
+        if source in explicit_passthrough:
+            source[ROLE_KEY] = ROLE_IMPORTED
+            component_id = legacy._component_id_from_object(source)
+            if component_id is not None and 0 <= int(component_id) <= 15:
+                source["velo_component_id"] = int(component_id)
+            _ensure_source_id(source)
+            continue
         source[ROLE_KEY] = ROLE_SOURCE
         source[PARTITION_ID_KEY] = body_id
         legacy._remember_and_hide(source)
     body[ROLE_KEY] = ROLE_DIAGNOSTIC if body_is_split_guide else ROLE_MASTER
     body[PARTITION_ID_KEY] = body_id
+    _normalize_passthrough_object_homes(settings, authoring)
     _capture_imported_objects(settings, authoring)
     return settings, cfg, authoring, body, reference, counts
 
@@ -863,6 +950,42 @@ def _hash_rna_scalars(hasher, owner):
             continue
 
 
+def _hash_attribute(hasher, attribute):
+    data = attribute.data
+    _hash_bytes(
+        hasher,
+        f"attr:{attribute.name}:{attribute.domain}:{attribute.data_type}:{len(data)}",
+    )
+    if not data:
+        return
+    prop = next(
+        (
+            item
+            for item in data[0].bl_rna.properties
+            if item.identifier != "rna_type"
+            and not item.is_readonly
+            and item.type in {'BOOLEAN', 'INT', 'FLOAT', 'STRING'}
+        ),
+        None,
+    )
+    if prop is None:
+        return
+    if prop.type == 'STRING':
+        for item in data:
+            _hash_bytes(hasher, repr(getattr(item, prop.identifier)))
+        return
+    typecode = {'BOOLEAN': 'b', 'INT': 'i', 'FLOAT': 'f'}[prop.type]
+    width = max(1, int(prop.array_length))
+    values = array(typecode, [0]) * (len(data) * width)
+    try:
+        data.foreach_get(prop.identifier, values)
+    except Exception:
+        for item in data:
+            _hash_bytes(hasher, repr(getattr(item, prop.identifier)))
+        return
+    _hash_bytes(hasher, values.tobytes())
+
+
 def _hash_mesh(hasher, obj, *, include_name=True):
     mesh = obj.data
     mesh_name = mesh.name if include_name else ""
@@ -875,8 +998,11 @@ def _hash_mesh(hasher, obj, *, include_name=True):
     if loop_vertices:
         mesh.loops.foreach_get("vertex_index", loop_vertices)
         _hash_bytes(hasher, loop_vertices.tobytes())
-    for polygon in mesh.polygons:
-        _hash_bytes(hasher, f"p:{polygon.loop_start}:{polygon.loop_total}:{polygon.material_index}")
+    for field in ("loop_start", "loop_total", "material_index"):
+        values = array('i', [0]) * len(mesh.polygons)
+        if values:
+            mesh.polygons.foreach_get(field, values)
+            _hash_bytes(hasher, values.tobytes())
     for layer in mesh.uv_layers:
         _hash_bytes(hasher, f"uv:{layer.name}")
         values = array('f', [0.0]) * (len(layer.data) * 2)
@@ -886,20 +1012,22 @@ def _hash_mesh(hasher, obj, *, include_name=True):
     for attribute in mesh.attributes:
         if attribute.name.startswith("velo_partition_") or attribute.name.startswith("__velo_partition_"):
             continue
-        _hash_bytes(hasher, f"attr:{attribute.name}:{attribute.domain}:{attribute.data_type}")
-        for item in attribute.data:
-            for field in ("value", "vector", "color"):
-                if hasattr(item, field):
-                    _hash_bytes(hasher, repr(getattr(item, field)))
-                    break
+        _hash_attribute(hasher, attribute)
     for slot in obj.material_slots:
         material = slot.material
         _hash_bytes(hasher, f"mat:{material.name if material else ''}:{slot.link}")
     for group in obj.vertex_groups:
         _hash_bytes(hasher, f"vg:{group.index}:{group.name}:{group.lock_weight}")
+    weight_indices = array('i')
+    weight_values = array('f')
     for vertex in mesh.vertices:
         for assignment in vertex.groups:
-            _hash_bytes(hasher, f"w:{vertex.index}:{assignment.group}:{assignment.weight:.9g}")
+            weight_indices.extend((vertex.index, assignment.group))
+            weight_values.append(assignment.weight)
+    _hash_bytes(hasher, f"weights:{len(weight_values)}")
+    if weight_values:
+        _hash_bytes(hasher, weight_indices.tobytes())
+        _hash_bytes(hasher, weight_values.tobytes())
     keys = mesh.shape_keys
     if keys is not None:
         for key in keys.key_blocks:
@@ -1193,9 +1321,6 @@ def _sync_impl(context):
         manifest = build_sync_manifest(context.scene)
         if not manifest:
             raise PartitionError("无法生成整体区同步指纹。")
-        staged_output_manifest = build_output_manifest(stage_root, desired_names)
-        if not staged_output_manifest:
-            raise PartitionError("无法生成分割区校验指纹。")
         body_output_map = {
             int(obj.get("velo_component_id")): obj
             for obj in body_outputs
@@ -1203,6 +1328,9 @@ def _sync_impl(context):
         }
         stage_root[SYNC_MANIFEST_KEY] = manifest
         stage_root[SYNC_VERSION_KEY] = SYNC_FORMAT_VERSION
+        binding_error = _validate_export_bindings(context.scene, cfg, stage_root)
+        if binding_error:
+            raise PartitionError(binding_error)
         committed = True
         if old_zone is not None and old_zone != stage_root and old_zone.get(EXPORT_ZONE_KEY):
             _remove_collection_tree(old_zone)
@@ -1323,6 +1451,11 @@ def _validate_export_bindings(scene, cfg, export):
                         return f"INI 开关 `{var.name}` / 状态 `{state.name}` 存在空对象绑定。"
                     if output_names_for_source(obj, cfg):
                         continue
+                    if obj.get(ROLE_KEY) in {ROLE_SOURCE, ROLE_REFERENCE, ROLE_DIAGNOSTIC}:
+                        return (
+                            f"INI 开关对象 `{obj.name}` 是分区辅助对象，不参与导出；"
+                            "请绑定整体区里的整体模型或普通导入对象。"
+                        )
                     if _omitted_by_visibility(scene, obj):
                         continue
                     if _object_in_collection_tree(export, obj) and obj.get(ROLE_KEY) == ROLE_OUTPUT:
@@ -1389,12 +1522,164 @@ def validate_export_state(scene):
 
 class VELO_OT_partition_passthrough_add(bpy.types.Operator):
     bl_idname = "velo.partition_passthrough_add"
-    bl_label = "添加原样同步"
+    bl_label = "添加集合规则"
+    bl_description = "添加一条递归原样同步 Collection 的高级规则"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        context.scene.velo_tools.partition_passthrough_items.add()
+        item = context.scene.velo_tools.partition_passthrough_items.add()
+        item.source_kind = 'COLLECTION'
         return {'FINISHED'}
+
+
+def _register_passthrough_object(settings, authoring, obj, target, *, allow_source=False):
+    if obj is settings.partition_master_object:
+        raise PartitionError("基准身体不能改为原样同步对象。")
+    blocked_roles = {ROLE_REFERENCE, ROLE_OUTPUT, ROLE_DIAGNOSTIC}
+    if not allow_source:
+        blocked_roles.add(ROLE_SOURCE)
+    if obj.get(ROLE_KEY) in blocked_roles:
+        raise PartitionError(f"`{obj.name}` 是分区来源或派生对象，不能原样同步。")
+    for index in reversed(range(len(settings.partition_whole_mesh_items))):
+        if settings.partition_whole_mesh_items[index].object is obj:
+            settings.partition_whole_mesh_items.remove(index)
+    existing = next(
+        (
+            item
+            for item in settings.partition_passthrough_items
+            if item.source_kind == 'OBJECT' and item.source_object is obj
+        ),
+        None,
+    )
+    if existing is None:
+        existing = next(
+            (
+                item
+                for item in settings.partition_passthrough_items
+                if item.source_kind == 'OBJECT' and item.source_object is None
+            ),
+            None,
+        )
+    if existing is None:
+        existing = settings.partition_passthrough_items.add()
+    existing.source_kind = 'OBJECT'
+    existing.source_object = obj
+    existing.target_component = int(target)
+    used_ids = {
+        str(other.get(SOURCE_ID_KEY, "") or "")
+        for other in authoring.all_objects
+        if other is not obj
+        and other.type == "MESH"
+        and other.get(ROLE_KEY) in {ROLE_IMPORTED, ROLE_MASTER}
+        and other.get(SOURCE_ID_KEY)
+    }
+    source_id = str(obj.get(SOURCE_ID_KEY, "") or "")
+    if not source_id or source_id in used_ids:
+        obj[SOURCE_ID_KEY] = uuid.uuid4().hex
+    obj[ROLE_KEY] = ROLE_IMPORTED
+    for key in (WHOLE_SPLIT_GROUP_KEY, WHOLE_SPLIT_NAME_KEY, PARTITION_ID_KEY):
+        if key in obj:
+            del obj[key]
+    _move_passthrough_to_component(authoring, obj, int(target))
+
+
+def _dedupe_passthrough_objects(settings):
+    seen_objects = set()
+    remove_indices = []
+    for index, item in enumerate(settings.partition_passthrough_items):
+        if item.source_kind != 'OBJECT':
+            continue
+        if item.source_object is None or item.source_object in seen_objects:
+            remove_indices.append(index)
+            continue
+        seen_objects.add(item.source_object)
+    for index in reversed(remove_indices):
+        settings.partition_passthrough_items.remove(index)
+
+
+class VELO_OT_partition_passthrough_join_selected(bpy.types.Operator):
+    bl_idname = "velo.partition_passthrough_join_selected"
+    bl_label = "加入选中物体"
+    bl_description = "把选中的 Mesh 立即移入整体区目标 Cx，并登记为不分割对象；编辑完成后再同步到分割区"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        settings = context.scene.velo_tools
+        try:
+            _settings_obj, cfg = _ensure_merged(context.scene)
+            authoring = _authoring_root(settings, cfg)
+            selected = sorted(
+                (obj for obj in context.selected_objects if obj.type == "MESH"),
+                key=lambda obj: (obj.name.casefold(), obj.name),
+            )
+            if not selected:
+                raise PartitionError("请先选择至少一个需要原样同步的 Mesh。")
+            target = int(settings.partition_passthrough_component)
+            for obj in selected:
+                _register_passthrough_object(settings, authoring, obj, target)
+            _dedupe_passthrough_objects(settings)
+            settings.partition_status = (
+                f"已将 {len(selected)} 个不分割物体移入整体区 C{target}；"
+                "可以继续编辑，完成后点击“同步到分割区”。"
+            )
+            self.report({'INFO'}, settings.partition_status)
+            return {'FINISHED'}
+        except Exception as exc:
+            settings.partition_status = str(exc)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class VELO_OT_partition_add_native_parts(bpy.types.Operator):
+    bl_idname = "velo.partition_add_native_parts"
+    bl_label = "加入原生部件"
+    bl_description = "按 Component N 名称自动识别 Cx，把选中的原生 Mesh 登记为不分割对象"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        settings = context.scene.velo_tools
+        try:
+            _settings_obj, cfg = _ensure_merged(context.scene)
+            authoring = _authoring_root(settings, cfg)
+            if settings.partition_master_object is None:
+                raise PartitionError("请先创建基准身体。")
+            selected = sorted(
+                (obj for obj in context.selected_objects if obj.type == "MESH"),
+                key=lambda obj: (obj.name.casefold(), obj.name),
+            )
+            if not selected:
+                raise PartitionError("请先选择至少一个原生 Component Mesh。")
+            rows = []
+            for obj in selected:
+                match = _COMPONENT_RE.match(str(obj.name or ""))
+                component_id = int(match.group(1)) if match else legacy._component_id_from_object(obj)
+                if component_id is None or not 0 <= int(component_id) <= 15:
+                    raise PartitionError(f"`{obj.name}` 无法识别 Component 编号。")
+                if obj is settings.partition_master_object:
+                    raise PartitionError("基准身体不能作为原生部件加入。")
+                if obj.get(ROLE_KEY) in {ROLE_REFERENCE, ROLE_OUTPUT, ROLE_DIAGNOSTIC}:
+                    raise PartitionError(f"`{obj.name}` 是参考体或派生对象，不能作为原生部件加入。")
+                rows.append((obj, int(component_id)))
+            for obj, component_id in rows:
+                _register_passthrough_object(
+                    settings,
+                    authoring,
+                    obj,
+                    component_id,
+                    allow_source=True,
+                )
+                legacy._restore_visibility(obj)
+            _dedupe_passthrough_objects(settings)
+            settings.partition_status = (
+                f"已加入 {len(rows)} 个原生部件并自动识别 Cx；"
+                "可以继续编辑，完成后点击“同步到分割区”。"
+            )
+            self.report({'INFO'}, settings.partition_status)
+            return {'FINISHED'}
+        except Exception as exc:
+            settings.partition_status = str(exc)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
 
 
 class VELO_OT_partition_passthrough_remove(bpy.types.Operator):
@@ -1489,6 +1774,14 @@ class VELO_OT_partition_add_whole_meshes(bpy.types.Operator):
             settings.partition_status = str(exc)
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+
+
+def split_session_is_active(context, settings) -> bool:
+    return bool(
+        settings.partition_mesh_split_active
+        and context.mode == 'EDIT_MESH'
+        and context.active_object is settings.partition_mesh_split_object
+    )
 
 
 class VELO_OT_partition_split_whole_mesh(bpy.types.Operator):
@@ -1626,8 +1919,11 @@ class VELO_OT_partition_split_whole_mesh(bpy.types.Operator):
     def execute(self, context):
         settings = context.scene.velo_tools
         try:
-            if settings.partition_mesh_split_active:
+            if split_session_is_active(context, settings):
                 return self._finish(context, settings)
+            if settings.partition_mesh_split_active:
+                settings.partition_mesh_split_active = False
+                settings.partition_mesh_split_object = None
             return self._start(context, settings)
         except Exception as exc:
             settings.partition_status = str(exc)
@@ -1682,6 +1978,8 @@ class VELO_OT_partition_sync_zones(bpy.types.Operator):
 
 _CLASSES = (
     VELO_OT_partition_passthrough_add,
+    VELO_OT_partition_passthrough_join_selected,
+    VELO_OT_partition_add_native_parts,
     VELO_OT_partition_passthrough_remove,
     VELO_OT_partition_create_standard_body,
     VELO_OT_partition_add_whole_meshes,

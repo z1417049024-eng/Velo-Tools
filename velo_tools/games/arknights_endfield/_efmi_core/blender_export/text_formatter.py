@@ -1,5 +1,33 @@
 
 
+import hashlib
+import re
+
+
+_PINYIN_BY_CHAR = {
+    '\u4e0a': 'shang',
+    '\u4e0b': 'xia',
+    '\u4e1d': 'si',
+    '\u4f53': 'ti',
+    '\u5185': 'nei',
+    '\u534a': 'ban',
+    '\u5e26': 'dai',
+    '\u624b': 'shou',
+    '\u65e0': 'wu',
+    '\u6709': 'you',
+    '\u6cf3': 'yong',
+    '\u73af': 'huan',
+    '\u82b1': 'hua',
+    '\u8863': 'yi',
+    '\u889c': 'wa',
+    '\u88e4': 'ku',
+    '\u8eab': 'shen',
+    '\u8fb9': 'bian',
+    '\u817f': 'tui',
+    '\u978b': 'xie',
+}
+
+
 class TextFormatter:
     
     @staticmethod
@@ -26,7 +54,7 @@ class TextFormatter:
                 name = name.name
             else:
                 name = str(name)
-        name = name.replace('$', '').replace('-', ' ').replace('.', ' ').replace('_', ' ')
+        name = re.sub(r'[^\w]+', ' ', name, flags=re.UNICODE)
         parts = list(map(str.lower, map(str.strip, name.split(' '))))
         return parts
 
@@ -34,13 +62,36 @@ class TextFormatter:
         parts = self.extract_name_parts(name)
         return ''.join(map(str.capitalize, parts))
 
+    def format_ini_identifier(self, name, ignored_parts=()):
+        if not isinstance(name, str):
+            name = name.name if hasattr(name, 'name') else str(name)
+
+        identifier_parts = []
+        for part in self.extract_name_parts(name):
+            if not part or part in ignored_parts:
+                continue
+            converted = []
+            for char in part:
+                if char.isascii() and (char.isalnum() or char == '_'):
+                    converted.append(char)
+                elif char in _PINYIN_BY_CHAR:
+                    converted.append(_PINYIN_BY_CHAR[char])
+                elif char.isalnum():
+                    converted.append(f'u{ord(char):x}')
+            if converted:
+                identifier_parts.append(''.join(converted))
+
+        identifier = '_'.join(identifier_parts)
+        if any(not char.isascii() for char in name):
+            digest = hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]
+            identifier = f'{identifier}_{digest}' if identifier else f'object_{digest}'
+        return identifier
+
     def format_ini_swapvar(self, name):
-        parts = self.extract_name_parts(name)
-        return f"$swapvar_{'_'.join([x for x in parts if x and x not in ['var', 'swap']])}"
-    
+        return f"$swapvar_{self.format_ini_identifier(name, ('var', 'swap'))}"
+
     def format_ini_drawvar(self, name):
-        parts = self.extract_name_parts(name)
-        return f"$draw_{'_'.join([x for x in parts if x])}"
+        return f"$draw_{self.format_ini_identifier(name)}"
 
     def extract_hotkeys_parts(self, hotkeys):
         hotkeys = hotkeys.upper().replace(',', ' ').replace('+', ' ').replace(';', ' ').replace('-', ' ')

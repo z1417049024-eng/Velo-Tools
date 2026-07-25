@@ -34,7 +34,7 @@ class VTEF_PT_SidePanelIniToggles(bpy.types.Panel):
         row.operator("vtef.collapse_toggle_vars", icon="TRIA_DOWN")
         row.operator("vtef.expand_toggle_vars", icon="TRIA_RIGHT")
 
-        layout.operator("vtef.add_toggle_var", text="Add Var", icon="ADD")
+        layout.operator("vtef.add_toggle_var", text="添加开关变量", icon="ADD")
 
         for i in reversed(range(len(cfg.ini_toggles.vars))):
             var = cfg.ini_toggles.vars[i]
@@ -87,23 +87,23 @@ class VTEF_PT_SidePanelIniToggles(bpy.types.Panel):
 
                         if not obj_item.object:
                             state_error = True
-                            error_text = f"ERROR: Object {k} is not set!"
+                            error_text = f"错误：第 {k + 1} 个对象尚未设置"
 
                         if obj_item.has_custom_conditions(var.name, state.name):
                             try:
-                                conditions.append('if ' + obj_item.format_conditions())
+                                conditions.append('条件：' + obj_item.format_conditions())
                             except Exception as e:
                                 state_error = True
-                                conditions.append(f'ERROR: {e}')
+                                conditions.append(f'错误：{e}')
                         else:
                             conditions.append('')
 
                     sub_row.alert = state_error
 
                     if var.default_state == state.name:
-                        sub_row.label(text=f"State {state.name} (default)")
+                        sub_row.label(text=f"状态 {state.name}（默认）")
                     else:
-                        sub_row.label(text=f"State {state.name}")
+                        sub_row.label(text=f"状态 {state.name}")
 
                     sub_row.alert = False
 
@@ -137,7 +137,7 @@ class VTEF_PT_SidePanelIniToggles(bpy.types.Panel):
                         obj_row = sub_box.row()
 
                         obj_conditions = conditions[k]
-                        condition_error = obj_conditions.startswith('ERR')
+                        condition_error = obj_conditions.startswith('错误')
                         if obj_conditions:
                             obj_row.alert = condition_error
                             obj_row.label(text=obj_conditions)
@@ -249,7 +249,7 @@ class VTEF_OT_EditToggleVar(bpy.types.Operator):
         cfg = context.scene.VTEF_settings
         layout = self.layout
         
-        layout.label(text="Toggle Var Settings:")
+        layout.label(text="开关变量设置")
 
         var = cfg.ini_toggles.vars[self.var_index]
 
@@ -261,14 +261,11 @@ class VTEF_OT_EditToggleVar(bpy.types.Operator):
         
         split.prop(var, "hotkeys")
 
-        op = split.operator("wm.url_open", text="Key Codes", icon='HELP')
+        op = split.operator("wm.url_open", text="按键代码表", icon='HELP')
         op.url = "https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes"
 
         row = box.row()
         row.prop_search(var, "default_state", var, "states")
-
-        row = box.row()
-        row.prop(var, "hide_empty_state")
 
     def invoke(self, context, event):
         return context.window_manager.invoke_popup(self, width=350)
@@ -382,7 +379,7 @@ class VTEF_OT_EditVarStateObject(bpy.types.Operator):
         cfg = context.scene.VTEF_settings
         layout = self.layout
         
-        layout.label(text="State Object Conditions:")
+        layout.label(text="对象显示条件")
 
         var = cfg.ini_toggles.vars[self.var_index]
         state = var.states[self.state_index]
@@ -420,7 +417,7 @@ class VTEF_OT_EditVarStateObject(bpy.types.Operator):
                     split.prop_search(condition, "state", cond_group, "states", text="")
                 else:
                     split.alert = True
-                    split.label(text="< Select Var! >")
+                    split.label(text="< 请选择变量 >")
                     split.alert = False
             else:
                 split.prop(condition, "state", text="")
@@ -494,16 +491,16 @@ class VTEF_OpenIniTogglesImportExportEditor(bpy.types.Operator):
         
         text.clear()
         text.write(dedent("""
-            This tool allows to backup your toggles or copy them to another project aka .blend file
+            此窗口用于备份 INI 开关，或把开关复制到另一个 .blend 工程。
 
-            To "[Import]" Ini Toggles Vars:
-            1. Create new text via button on the middle panel above (or clear this text)
-            2. Paste Ini Toggles export text
-            3. Press "Import Ini Toggles" on side panel "Ini Toggles - EFMI Tools" to the right
+            导入 INI 开关：
+            1. 在上方新建一个文本，或清空当前文本
+            2. 粘贴之前导出的 INI 开关 JSON
+            3. 点击右侧“INI 开关 - Velo Tools”面板中的“导入 INI 开关”
 
-            To "[Export]" Ini Toggles Vars:
-            1. Press "Export Ini Toggles" on side panel "Ini Toggles - EFMI Tools" to the right
-            2. Copy generated export text
+            导出 INI 开关：
+            1. 点击右侧“INI 开关 - Velo Tools”面板中的“导出 INI 开关”
+            2. 复制生成的 JSON 文本并保存
         """))
         text.cursor_set(0)
 
@@ -577,20 +574,20 @@ class VTEF_ImportIniToggles(bpy.types.Operator):
                         break
         try:
             if text is None:
-                raise ValueError(f'Text editor area has no text file open!')
+                raise ValueError('文本编辑器中没有打开文本')
             try:
                 data = json.loads(text.as_string())
             except Exception as e:
-                raise ValueError(f'Unknown data format (not a json dict)') from e
+                raise ValueError('无法识别数据格式，内容不是有效的 JSON') from e
             imported_vars_count, skipped_vars_count = cfg.ini_toggles.import_vars(
                 data, cfg.ini_toggles.replace_vars_on_import, cfg.ini_toggles.clear_vars_on_import
             )
-            msg = f'Imported {imported_vars_count} Ini Toggle Vars'
+            msg = f'已导入 {imported_vars_count} 个 INI 开关变量'
             if skipped_vars_count > 0:
-                msg += f' (skipped {skipped_vars_count} duplicates)'
+                msg += f'（跳过 {skipped_vars_count} 个同名变量）'
             self.report({'INFO'}, msg)
         except Exception as e:
-            self.report({'ERROR'}, f'Failed to import Ini Toggle Vars: {e}')
+            self.report({'ERROR'}, f'导入 INI 开关失败：{e}')
             # Roll back the operator's changes
             bpy.ops.ed.undo()
             return {'CANCELLED'}

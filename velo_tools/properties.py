@@ -1322,10 +1322,21 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
     )
     partition_whole_mesh_items: CollectionProperty(type=VELO_PartitionWholeMeshItem)
     partition_whole_mesh_index: IntProperty(default=0)
-    partition_mesh_split_active: BoolProperty(default=False, options={'HIDDEN'})
-    partition_mesh_split_object: PointerProperty(type=bpy.types.Object, options={'HIDDEN'})
+    partition_mesh_split_active: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
+    partition_mesh_split_object: PointerProperty(
+        type=bpy.types.Object,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
     partition_registry_migrated: BoolProperty(default=False, options={'HIDDEN'})
     partition_imported_captured: BoolProperty(default=False, options={'HIDDEN'})
+    partition_auto_link_separated: BoolProperty(
+        name="自动识别分离并创建集合",
+        description=(
+            "同步时按内部来源 ID 识别复制或手工分离的整体模型，自动创建强关联集合；"
+            "支持连续多次分离，改名不影响识别"
+        ),
+        default=True,
+    )
     partition_output_mode: EnumProperty(
         name="生成方式",
         items=[
@@ -1343,6 +1354,16 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
     partition_merge_items: CollectionProperty(type=VELO_PartitionMergeItem)
     partition_new_part_items: CollectionProperty(type=VELO_PartitionNewPartItem)
     partition_passthrough_items: CollectionProperty(type=VELO_PartitionPassthroughItem)
+    partition_passthrough_component: IntProperty(
+        name="不分割物体目标 Component",
+        description=(
+            "“加入选中物体”会立即把选中的 Mesh 移入整体区这个 Cx；"
+            "之后同步时原样复制到分割区，不进行 Component 拆分"
+        ),
+        default=0,
+        min=0,
+        max=15,
+    )
     partition_sync_manifest: StringProperty(default="", options={'HIDDEN'})
     partition_output_manifest: StringProperty(default="", options={'HIDDEN'})
     partition_preview_mode: EnumProperty(

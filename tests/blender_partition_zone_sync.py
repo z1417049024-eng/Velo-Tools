@@ -24,6 +24,8 @@ from velo_tools.partition.constants import (  # noqa: E402
     ROLE_OUTPUT,
     ROLE_SOURCE,
     SOURCE_ID_KEY,
+    WHOLE_SPLIT_COLLECTION_KEY,
+    WHOLE_SPLIT_GROUP_KEY,
 )
 from velo_tools.partition.sync import (  # noqa: E402
     build_output_manifest,
@@ -188,6 +190,159 @@ def main():
         print("OUTPUT_MANIFESTS", settings.partition_output_manifest, build_output_manifest(export))
     assert initial_validation is None, initial_validation
 
+    native_c9 = mesh_object(
+        "Component 9 38faea2c.004",
+        [(-0.2, -0.2, 0.4), (0.2, -0.2, 0.4), (0, 0.2, 0.4)],
+        [(0, 1, 2)],
+        components[2],
+    )
+    native_c1 = mesh_object(
+        "Component 1 1f3a085f",
+        [(-0.2, -0.2, 0.5), (0.2, -0.2, 0.5), (0, 0.2, 0.5)],
+        [(0, 1, 2)],
+        components[2],
+    )
+    native_c9[ROLE_KEY] = ROLE_SOURCE
+    native_c1[ROLE_KEY] = ROLE_SOURCE
+    source_right.hide_viewport = False
+    source_right.hide_render = False
+    source_right.hide_set(False)
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    for obj in (native_c9, native_c1, source_right):
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = native_c9
+    assert bpy.ops.velo.partition_add_native_parts() == {'FINISHED'}
+    native_targets = {
+        item.source_object: int(item.target_component)
+        for item in settings.partition_passthrough_items
+        if item.source_kind == 'OBJECT'
+    }
+    assert native_targets[native_c9] == 9
+    assert native_targets[native_c1] == 1
+    assert native_targets[source_right] == 2
+    assert all(obj.get(ROLE_KEY) == ROLE_IMPORTED for obj in (native_c9, native_c1, source_right))
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert source_right.get(ROLE_KEY) == ROLE_IMPORTED
+    assert len(output_names_for_source(native_c9, cfg)) == 1
+    assert output_names_for_source(native_c9, cfg)[0].startswith("Component 9 ")
+    assert len(output_names_for_source(native_c1, cfg)) == 1
+    assert output_names_for_source(native_c1, cfg)[0].startswith("Component 1 ")
+    assert len(output_names_for_source(source_right, cfg)) == 1
+    for obj in (native_c9, native_c1, source_right):
+        obj.hide_set(True)
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert not output_names_for_source(native_c9, cfg)
+    assert not output_names_for_source(native_c1, cfg)
+    assert not output_names_for_source(source_right, cfg)
+
+    copied_garment = garment.copy()
+    copied_garment.data = garment.data.copy()
+    copied_garment.name = "Component 2 Copied Garment"
+    components[2].objects.link(copied_garment)
+    assert settings.partition_auto_link_separated
+    assert copied_garment.get(SOURCE_ID_KEY) == garment.get(SOURCE_ID_KEY)
+    assert copied_garment not in {
+        item.object for item in settings.partition_whole_mesh_items
+    }
+    settings.partition_auto_link_separated = False
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert copied_garment not in {
+        item.object for item in settings.partition_whole_mesh_items
+    }
+    settings.partition_auto_link_separated = True
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert copied_garment in {
+        item.object for item in settings.partition_whole_mesh_items
+    }
+    assert copied_garment.get(SOURCE_ID_KEY) != garment.get(SOURCE_ID_KEY)
+    assert copied_garment.get(WHOLE_SPLIT_GROUP_KEY)
+    assert copied_garment.get(WHOLE_SPLIT_GROUP_KEY) == garment.get(WHOLE_SPLIT_GROUP_KEY)
+    linked_groups = {
+        collection
+        for obj in (garment, copied_garment)
+        for collection in obj.users_collection
+        if collection.get(WHOLE_SPLIT_COLLECTION_KEY)
+    }
+    assert len(linked_groups) == 1
+    copied_outputs = output_names_for_source(copied_garment, cfg)
+    assert len(copied_outputs) == 2
+
+    nested_piece = copied_garment.copy()
+    nested_piece.data = copied_garment.data.copy()
+    nested_piece.name = "Renamed Nested Piece"
+    next(iter(copied_garment.users_collection)).objects.link(nested_piece)
+    assert nested_piece.get(SOURCE_ID_KEY) == copied_garment.get(SOURCE_ID_KEY)
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert nested_piece.get(SOURCE_ID_KEY) != copied_garment.get(SOURCE_ID_KEY)
+    assert nested_piece.get(WHOLE_SPLIT_GROUP_KEY) == copied_garment.get(WHOLE_SPLIT_GROUP_KEY)
+    nested_outputs = output_names_for_source(nested_piece, cfg)
+    assert len(nested_outputs) == 2
+    assert all("Renamed Nested Piece" in name for name in nested_outputs)
+    copied_garment.hide_set(True)
+    nested_piece.hide_set(True)
+
+    direct = mesh_object(
+        "Unsplit Accessory",
+        [(-0.2, -0.2, 0.3), (0.2, -0.2, 0.3), (0, 0.2, 0.3)],
+        [(0, 1, 2)],
+        components[2],
+    )
+    direct[SOURCE_ID_KEY] = body[SOURCE_ID_KEY]
+    external = bpy.data.collections.new("External Accessory Working Set")
+    scene.collection.children.link(external)
+    external.objects.link(direct)
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    direct.select_set(True)
+    bpy.context.view_layer.objects.active = direct
+    settings.partition_passthrough_component = 2
+    assert bpy.ops.velo.partition_passthrough_join_selected() == {'FINISHED'}
+    assert direct[SOURCE_ID_KEY] != body[SOURCE_ID_KEY]
+    settings.partition_passthrough_component = 7
+    assert bpy.ops.velo.partition_passthrough_join_selected() == {'FINISHED'}
+    direct_rules = [
+        item
+        for item in settings.partition_passthrough_items
+        if item.source_kind == 'OBJECT' and item.source_object is direct
+    ]
+    assert len(direct_rules) == 1
+    direct_rule = next(
+        item
+        for item in settings.partition_passthrough_items
+        if item.source_kind == 'OBJECT' and item.source_object is direct
+    )
+    assert direct_rule.target_component == 7
+    component_7 = next(
+        collection
+        for collection in authoring.children
+        if int(collection.get("velo_component_id", -1)) == 7
+    )
+    assert direct.name in component_7.objects
+    assert direct.name not in components[2].objects
+    assert direct.name in external.objects
+    assert int(direct.get("velo_component_id", -1)) == 7
+    assert not output_names_for_source(direct, cfg)
+    components[2].objects.link(direct)
+    component_7.objects.unlink(direct)
+    assert direct.name in components[2].objects
+    direct.data.vertices[0].co.x -= 0.1
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert direct.name in component_7.objects
+    assert direct.name not in components[2].objects
+    direct_outputs = output_names_for_source(direct, cfg)
+    assert len(direct_outputs) == 1
+    assert direct_outputs[0].startswith("Component 7 ")
+    direct_output = next(obj for obj in settings.partition_export_collection.all_objects if obj.name == direct_outputs[0])
+    assert abs(direct_output.data.vertices[0].co.x - direct.data.vertices[0].co.x) < 1e-6
+    direct.hide_set(True)
+
+    export = settings.partition_export_collection
+    body_outputs = [
+        obj
+        for obj in export.all_objects
+        if obj.get(SOURCE_ID_KEY) == body.get(SOURCE_ID_KEY)
+    ]
     body_by_component = {int(obj.get("velo_component_id")): obj for obj in body_outputs}
     merge = settings.partition_merge_items.add()
     merge.source_object = body_by_component[1]
@@ -212,6 +367,35 @@ def main():
     scene.crossib_settings.enabled = True
     assert set(_source_name_aliases(crossib, cfg, bpy.context)) == set(output_names_for_source(body, cfg))
     assert "请先点击" in validate_export_state(scene)
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert validate_export_state(scene) is None
+
+    invalid_toggle_object = toggle.states[1].add_new_state_object(toggle.name)
+    invalid_toggle_object.object = source_left
+    try:
+        assert bpy.ops.velo.partition_sync_zones() == {'CANCELLED'}
+    except RuntimeError as exc:
+        assert source_left.name in str(exc)
+        assert "不参与导出" in str(exc)
+    assert source_left.name in settings.partition_status
+    assert "不参与导出" in settings.partition_status
+    toggle.states[1].objects.remove(len(toggle.states[1].objects) - 1)
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert validate_export_state(scene) is None
+
+    copied_source = source_left.copy()
+    copied_source.data = source_left.data.copy()
+    copied_source.name = source_left.name + ".004"
+    components[1].objects.link(copied_source)
+    copied_toggle_object = toggle.states[1].add_new_state_object(toggle.name)
+    copied_toggle_object.object = copied_source
+    assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
+    assert copied_source.get(ROLE_KEY) == ROLE_IMPORTED
+    assert copied_source.get(SOURCE_ID_KEY)
+    assert len(output_names_for_source(copied_source, cfg)) == 1
+    assert validate_export_state(scene) is None
+    toggle.states[1].objects.remove(len(toggle.states[1].objects) - 1)
+    bpy.data.objects.remove(copied_source, do_unlink=True)
     assert bpy.ops.velo.partition_sync_zones() == {'FINISHED'}
     assert validate_export_state(scene) is None
 

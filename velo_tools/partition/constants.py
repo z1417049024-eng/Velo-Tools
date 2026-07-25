@@ -43,4 +43,4 @@ PREVIOUS_HIDE_RENDER_KEY = "velo_partition_prev_hide_render"
 PREVIOUS_HIDE_GET_KEY = "velo_partition_prev_hide_get"
 
 WORK_COLLECTION_NAME = "Velo Partition"
-SYNC_FORMAT_VERSION = 2
+SYNC_FORMAT_VERSION = 3

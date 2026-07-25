@@ -47,9 +47,9 @@ class ToggleVarStateCondition(bpy.types.PropertyGroup):
     def __str__(self):
         var_name = self.var.strip()
         if not var_name:
-            raise ValueError(f'Var name is not set')
+            raise ValueError('未设置变量名')
         if not self.state:
-            raise ValueError(f'State is not set')
+            raise ValueError('未设置比较值')
         if self.type == 'EXTERNAL' and var_name.startswith('$'):
             pass  # Use var name as it is, without any formatting
         else:
@@ -94,7 +94,7 @@ class ToggleVarStateObject(bpy.types.PropertyGroup):
             try:
                 result += str(condition)
             except Exception as e:
-                raise ValueError(f'Condition {i}: {e}') from e
+                raise ValueError(f'第 {i + 1} 条条件：{e}') from e
         return result
     
     def has_custom_conditions(self, var_name, var_state):
@@ -325,21 +325,21 @@ class IniToggles(bpy.types.PropertyGroup):
     
     def import_vars(self, data, replace_vars = False, clear_vars = False):
         if not isinstance(data, dict):
-            raise ValueError(f'Unknown data format (not a dict)')
+            raise ValueError('无法识别数据格式：根数据不是字典')
         format_type = data.get('format_type', None)
         if format_type is None:
-            raise ValueError(f'Unknown data format (format_type not specified)')
+            raise ValueError('无法识别数据格式：缺少 format_type')
         format_type = str(format_type).strip()
         if format_type != 'IniToggleVars':
-            raise ValueError(f'Invalid data format type `{format_type}` (expected `IniToggleVars`)')
+            raise ValueError(f'数据类型 `{format_type}` 无效，应为 `IniToggleVars`')
         format_version = data.get('format_version', None)
         if format_version is None:
-            raise ValueError(f'Unknown data format (format_version not specified)')
+            raise ValueError('无法识别数据格式：缺少 format_version')
         format_version = str(format_version).strip()
         if format_version < '1.0':
-            raise ValueError(f'Unknown data format version `{format_version}` (expected at least `1.0`)')
+            raise ValueError(f'无法识别数据版本 `{format_version}`，最低支持 `1.0`')
         if format_version > '1.0':
-            raise ValueError(f'Installed EFMI Tools version does not support `{format_version}` data format version, please check for available addon updates!')
+            raise ValueError(f'当前 EFMI Tools 不支持数据版本 `{format_version}`，请更新插件')
         
         vars_data = data['data']
 
@@ -369,7 +369,7 @@ class IniToggles(bpy.types.PropertyGroup):
                 for obj_id, obj in enumerate(state.objects):
                     try:
                         if not obj.object:
-                            raise ValueError(f'Object {obj_id} is not set')
+                            raise ValueError(f'第 {obj_id + 1} 个对象尚未设置')
                         try:
                             from velo_tools.partition.sync import output_names_for_source
 
@@ -385,5 +385,5 @@ class IniToggles(bpy.types.PropertyGroup):
                             else:
                                 conditions[object_name] = f'({formatted})'
                     except Exception as e:
-                        raise ValueError(f'Ini Toggles error in State `{state.name}` of Var `{var.name}`:\n{e}') from e
+                        raise ValueError(f'INI 开关变量 `{var.name}` 的状态 `{state.name}` 存在错误：\n{e}') from e
         return conditions

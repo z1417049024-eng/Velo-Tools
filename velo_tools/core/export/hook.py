@@ -378,7 +378,48 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
             except Exception:
                 traceback.print_exc()
             try:
-                return orig_execute(self, context)
+                result = orig_execute(self, context)
+                if adapter_key == "EFMI" and isinstance(result, set) and 'FINISHED' in result:
+                    cfg = getattr(context.scene, settings_attr, None)
+                    output_folder = str(getattr(cfg, "mod_output_folder", "") or "")
+                    toggle_vars = list(getattr(getattr(cfg, "ini_toggles", None), "vars", ()))
+                    hotkey_count = sum(bool(str(getattr(var, "hotkeys", "") or "").strip()) for var in toggle_vars)
+                    repeated_in_states = set()
+                    object_vars = {}
+                    for var in toggle_vars:
+                        seen_in_var = set()
+                        for state in var.states:
+                            for item in state.objects:
+                                obj = item.object
+                                if obj is None:
+                                    continue
+                                object_key = int(obj.as_pointer())
+                                if object_key in seen_in_var:
+                                    repeated_in_states.add(object_key)
+                                seen_in_var.add(object_key)
+                                object_vars.setdefault(object_key, set()).add(var.name)
+                    shared_between_vars = sum(len(var_names) > 1 for var_names in object_vars.values())
+                    message = f"Mod 导出完成：{output_folder or '当前输出目录'}"
+                    if bool(getattr(cfg, "use_ini_toggles", False)):
+                        message += (
+                            f"；INI 开关 {len(toggle_vars)} 个"
+                            f"（有快捷键 {hotkey_count} 个，无快捷键 {len(toggle_vars) - hotkey_count} 个）"
+                        )
+                        if repeated_in_states:
+                            message += f"；同一开关跨状态重复对象 {len(repeated_in_states)} 个"
+                        if shared_between_vars:
+                            message += f"；被多个开关共同控制 {shared_between_vars} 个"
+                    print(f"[velo.export-hook] {message}")
+                    try:
+                        has_warnings = (
+                            hotkey_count < len(toggle_vars)
+                            or bool(repeated_in_states)
+                            or bool(shared_between_vars)
+                        )
+                        self.report({'WARNING'} if has_warnings else {'INFO'}, message)
+                    except Exception:
+                        pass
+                return result
             finally:
                 try:
                     if _mesh_ops is not None:
